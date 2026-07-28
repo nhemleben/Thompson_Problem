@@ -7,7 +7,8 @@ from search import search
 
 E,x=search(
     3,
-    target_depth=10
+    target_depth=10,
+    visualize_search=True
 )
 
 print(E,"Should be \sqrt{3} = 1.732...")

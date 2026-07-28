@@ -7,7 +7,7 @@ from search import search
 
 E,x=search(
     4,
-    target_depth=100
+    target_depth=11
 )
 
 print(E,"Should be 3 * \sqrt{3/2} = 3.674234...")
