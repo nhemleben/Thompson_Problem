@@ -11,17 +11,21 @@ class Cell:
 def split(cell):
 
     """
-    Bisect largest angular interval
+    Bisect largest angular interval, skip infinitly small ones ande give warning
     """
 
     largest=None
     size=-1
 
-    for i,b in enumerate(cell.bounds):
+    for i,bounds in enumerate(cell.bounds):
 
         for j in range(2):
 
-            s=b[j][1]-b[j][0]
+            s=bounds[j][1]-bounds[j][0]
+
+            if s<1e-8:
+                print(f"Warning: infinitesimally small interval at cell {i}, dimension {j}")
+                continue
 
             if s>size:
                 size=s

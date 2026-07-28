@@ -3,12 +3,12 @@ from itertools import count
 
 from matplotlib.pyplot import draw
 
-from global_visualize import draw_global_search
+from visualizations.global_visualize import draw_global_search
 from partition import *
 from bound import *
 from energy import *
 from inital_part import initial_cell
-import visualize_parameter_mesh
+from visualizations import visualize_parameter_mesh
 
 
 def search(n,target_depth=12, visualize_search=False):

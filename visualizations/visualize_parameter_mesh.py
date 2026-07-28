@@ -41,6 +41,17 @@ def visualize_parameter_mesh(
 
     for cell, value in zip(cells, lower_bounds):
 
+
+
+
+#Make this as subplots or different plots or remove rectable
+#more importantly fix search so the base one is at 0.0 in polar and so that the 
+#second particle is on the equator (theta = pi/2)
+#
+
+
+
+
         for particle in particles:
             theta_bounds, phi_bounds = cell.bounds[particle]
 
