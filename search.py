@@ -9,9 +9,10 @@ from bound import *
 from energy import *
 from inital_part import initial_cell
 from visualizations import visualize_parameter_mesh
+from visualizations import visualize_final_minimum
 
 
-def search(n,target_depth=12, visualize_search=False):
+def search(n,target_depth=12, visualize_search=False, visualize_all_particles=False):
 
 
     root=initial_cell(n)
@@ -51,10 +52,10 @@ def search(n,target_depth=12, visualize_search=False):
 
         config=[]
 
-        for t,p in cell.bounds:
+        for theta,phi in (pr.bounds for pr in cell.particle_ranges):
 
-            tc=(t[0]+t[1])/2
-            pc=(p[0]+p[1])/2
+            tc=(theta.lo+theta.hi)/2
+            pc=(phi.lo+phi.hi)/2
 
             config.append(
                 (tc,pc)
@@ -86,18 +87,22 @@ def search(n,target_depth=12, visualize_search=False):
                 )
 
     if visualize_search:
-        draw_global_search(
-            active_cells,
-            bounds,
-            particle=0
-        )
+        if visualize_all_particles:
+            for particle in range(n):
+                draw_global_search(
+                    active_cells,
+                    bounds,
+                    particle=particle
+                )
+        visualize_final_minimum.plot_final_minimum(best_config, best)
+
         visualize_parameter_mesh.visualize_parameter_mesh(
             active_cells,
-            particles=range(n),
+            particle_indexes=range(n),
             lower_bounds=bounds
         )
 
-        print(active_cells)
-        print(bounds)
+        #print(active_cells)
+        #print(bounds)
 
     return best,best_config

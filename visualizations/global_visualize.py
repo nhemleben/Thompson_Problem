@@ -60,20 +60,14 @@ def draw_global_search(
 
 
     for cell in cells:
+        theta_bounds =[pr.bounds[0] for pr in cell.particle_ranges]
+        phi_bounds =[pr.bounds[1] for pr in cell.particle_ranges]
 
-        theta_bounds,phi_bounds = (
-            cell.bounds[particle]
-        )
-
-
-        theta=np.mean(theta_bounds)
-        phi=np.mean(phi_bounds)
+        theta=(theta_bounds[particle].lo+theta_bounds[particle].hi) /2
+        phi=(phi_bounds[particle].lo+phi_bounds[particle].hi) /2
 
 
-        p=spherical_to_cart(
-            theta,
-            phi
-        )
+        p=spherical_to_cart( theta, phi)
 
         points.append(p)
 
@@ -105,7 +99,7 @@ def draw_global_search(
 
     fig.colorbar(
         scatter,
-        label="Energy lower bound"
+        label=f"Energy lower bound for particle {particle}"
     )
 
 
