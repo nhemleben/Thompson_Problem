@@ -1,3 +1,6 @@
+from partition import Cell
+
+
 def initial_cell(n):
 
     bounds=[]

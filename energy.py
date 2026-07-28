@@ -9,19 +9,17 @@ def thompson_energy(points):
     Coulomb energy on sphere
     """
 
-    xyz=[
-        spherical_to_cart(*p)
-        for p in points
-    ]
+    xyz=[ spherical_to_cart(*p) for p in points ]
 
     E=0
 
     for i,j in itertools.combinations(
             range(len(xyz)),2):
 
-        d=np.linalg.norm(
-            xyz[i]-xyz[j]
-        )
+        d=np.linalg.norm( xyz[i]-xyz[j] )
+
+        if d == 0:
+            return float("inf")
 
         E += 1/d
 
