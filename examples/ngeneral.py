@@ -7,7 +7,7 @@ from search import search
 
 E,x=search(
     6,
-    target_depth=19,
+    target_depth=22,
     visualize_search=False,
     show_progress=True,
 )

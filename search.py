@@ -1,6 +1,8 @@
 import heapq
 from itertools import count
 import time
+import multiprocessing as mp
+import math 
 
 from matplotlib.pyplot import draw
 
@@ -13,6 +15,37 @@ from visualizations import visualize_parameter_mesh
 from visualizations import visualize_final_minimum
 
 
+def _ordered_theta_possible(cell, epsilon=1e-15):
+
+    if len(cell.particle_ranges) <= 3:
+        return True
+
+    theta_bounds = [
+        pr.bounds[0]
+        for pr in cell.particle_ranges[2:]
+    ]
+
+    current_theta = theta_bounds[0].lo
+    if current_theta > theta_bounds[0].hi:
+        return False
+
+    for bounds in theta_bounds[1:]:
+        current_theta = max(bounds.lo, current_theta + epsilon)
+        if current_theta > bounds.hi:
+            return False
+
+    return True
+
+
+def _ordered_theta_center(config, epsilon=1e-12):
+
+    if len(config) <= 3:
+        return True
+
+    thetas = [theta for theta, _ in config[2:]]
+    return all(thetas[i] + epsilon < thetas[i + 1] for i in range(len(thetas) - 1))
+
+
 def search(
     n,
     target_depth=12,
@@ -21,6 +54,8 @@ def search(
     visualize_mesh = False,
     show_progress=True,
     progress_update_every=10000,
+    parallel_child_bounds=False,
+    parallel_workers=None,
 ):
 
 
@@ -45,7 +80,8 @@ def search(
     best_config=None
 
     processed_nodes = 0
-    estimated_total_nodes = (2 ** (target_depth + 1)) - 1
+    #Naive 2^depth and then discard n! that don't obey symetry arguments
+    estimated_total_nodes = ((2 ** (target_depth + 1)) - 1 ) / math.factorial(n-2)
     progress_line_width = 0
     start_time = time.perf_counter()
 
@@ -68,72 +104,92 @@ def search(
     if show_progress:
         _print_progress_line(0)
 
+    pool = None
+    if parallel_child_bounds:
+        pool = mp.Pool(processes=parallel_workers)
 
-    while queue:
+    try:
+        while queue:
 
-        lb,_,cell=heapq.heappop(queue)
-        processed_nodes += 1
+            lb,_,cell=heapq.heappop(queue)
+            processed_nodes += 1
 
-        if show_progress and (
-            processed_nodes % progress_update_every == 0 or not queue
-        ):
-            _print_progress_line(processed_nodes)
+            if show_progress and (
+                processed_nodes % progress_update_every == 0 or not queue
+            ):
+                _print_progress_line(processed_nodes)
 
-        if visualize_search:
-            active_cells.append(cell)
-            bounds.append(lb)
+            if visualize_search:
+                active_cells.append(cell)
+                bounds.append(lb)
 
-        if lb>=best:
-            continue
+            if lb>=best:
+                continue
 
-
-        # test center point
-
-        config=[]
-
-        for theta,phi in (pr.bounds for pr in cell.particle_ranges):
-
-            tc=(theta.lo+theta.hi)/2
-            pc=(phi.lo+phi.hi)/2
-
-            config.append(
-                (tc,pc)
-            )
+            if not _ordered_theta_possible(cell):
+                continue
 
 
-        E=thompson_energy(config)
+            # test center point
 
+            config=[]
 
-        if E<best:
+            for theta,phi in (pr.bounds for pr in cell.particle_ranges):
 
-            best=E
-            best_config=config
+                tc=(theta.lo+theta.hi)/2
+                pc=(phi.lo+phi.hi)/2
 
-            if show_progress:
-                print()
-            print( "new", best)
-
-
-        if cell.depth < target_depth:
-
-            children, split_particle_index = split_with_index(cell)
-            child_lbs = energy_lower_bound_children(
-                cell,
-                lb,
-                children,
-                split_particle_index
-            )
-
-            for child, child_lb in zip(children, child_lbs):
-
-                heapq.heappush(
-                    queue,
-                    (
-                    child_lb,
-                    next(tie_breaker),
-                    child
-                    )
+                config.append(
+                    (tc,pc)
                 )
+
+
+            E=thompson_energy(config)
+
+
+            if E<best:
+
+                if not _ordered_theta_center(config):
+                    continue
+
+                best=E
+                best_config=config
+
+                if show_progress:
+                    print()
+                print( "new", best)
+
+
+            if cell.depth < target_depth:
+
+                children, split_particle_index = split_with_index(cell)
+                children = [child for child in children if _ordered_theta_possible(child)]
+
+                if not children:
+                    continue
+
+                child_lbs = energy_lower_bound_children(
+                    cell,
+                    lb,
+                    children,
+                    split_particle_index,
+                    pool=pool
+                )
+
+                for child, child_lb in zip(children, child_lbs):
+
+                    heapq.heappush(
+                        queue,
+                        (
+                        child_lb,
+                        next(tie_breaker),
+                        child
+                        )
+                    )
+    finally:
+        if pool is not None:
+            pool.close()
+            pool.join()
 
     if visualize_search:
         if visualize_all_particles:
@@ -143,6 +199,16 @@ def search(
                     bounds,
                     particle=particle
                 )
+
+    elapsed_total = time.perf_counter() - start_time
+    if processed_nodes > 0:
+        average_seconds_per_node = elapsed_total / processed_nodes
+        print(
+            f"Average time: {average_seconds_per_node:.6f}s/node "
+            f"over {processed_nodes} nodes"
+        )
+    else:
+        print("Average time: n/a s/node over 0 nodes")
 
     #always visualize final configuration.
     visualize_final_minimum.plot_final_minimum(best_config, best)

@@ -1,4 +1,6 @@
 
 
 Need to force the theta1<theta2 <theta3< ... order to reduce search space
+    This is done but we generate the points first which seems less optimal then just not doing that 
+    Added to follow up graveyard
 

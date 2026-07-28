@@ -30,7 +30,7 @@ In partition.py, you split only the largest interval. Better pruning often comes
 In search.py, you prune only via `lb >= best`.
 Also stop globally when `best - current_global_lb < eps`. This can cut huge tail work.
 
-8. Parallelize child bound evaluation.
+x8. Parallelize child bound evaluation.
 In search.py, each child’s `energy_lower_bound(child)` is independent.
 Use multiprocessing for bound calculations (process pool), especially for larger `n`.
 

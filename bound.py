@@ -102,7 +102,28 @@ def energy_lower_bound(cell):
     return E
 
 
-def energy_lower_bound_children(parent_cell, parent_lb, children, split_particle_index):
+def _child_lb_task(args):
+
+    parent_lb, old_terms, split_particle_index, child_bounds = args
+    n = len(child_bounds)
+    split_child_bounds = child_bounds[split_particle_index]
+
+    new_terms = 0.0
+    for k in range(n):
+        if k == split_particle_index:
+            continue
+        new_terms += pair_lower_bound(split_child_bounds, child_bounds[k])
+
+    return parent_lb - old_terms + new_terms
+
+
+def energy_lower_bound_children(
+    parent_cell,
+    parent_lb,
+    children,
+    split_particle_index,
+    pool=None,
+):
 
     if split_particle_index is None:
         return [energy_lower_bound(child) for child in children]
@@ -118,18 +139,16 @@ def energy_lower_bound_children(parent_cell, parent_lb, children, split_particle
             continue
         old_terms += pair_lower_bound(split_parent_bounds, parent_bounds[k])
 
-    child_lbs = []
+    child_bounds_list = [[pr.bounds for pr in child.particle_ranges] for child in children]
 
-    for child in children:
-        child_bounds = [pr.bounds for pr in child.particle_ranges]
-        split_child_bounds = child_bounds[split_particle_index]
+    if pool is not None and len(child_bounds_list) > 1:
+        tasks = [
+            (parent_lb, old_terms, split_particle_index, child_bounds)
+            for child_bounds in child_bounds_list
+        ]
+        return pool.map(_child_lb_task, tasks)
 
-        new_terms = 0.0
-        for k in range(n):
-            if k == split_particle_index:
-                continue
-            new_terms += pair_lower_bound(split_child_bounds, child_bounds[k])
-
-        child_lbs.append(parent_lb - old_terms + new_terms)
-
-    return child_lbs
+    return [
+        _child_lb_task((parent_lb, old_terms, split_particle_index, child_bounds))
+        for child_bounds in child_bounds_list
+    ]
