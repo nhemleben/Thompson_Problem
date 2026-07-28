@@ -23,7 +23,7 @@ class Cell:
     depth:int=0
 
 
-def split(cell):
+def _find_split_axis(cell):
 
     """
     Bisect largest angular interval, skip infinitly small ones ande give warning
@@ -51,35 +51,66 @@ def split(cell):
                 largest=(i,j)
 
 
-    if largest is None:
-        return []
+    return largest
 
-    i,j=largest
 
-    b=cell.particle_ranges.copy()
+def _split_on_axis(cell, i, j):
 
-    lo,hi=b[i].bounds[j].lo,b[i].bounds[j].hi
+    target_particle = cell.particle_ranges[i]
+    lo,hi=target_particle.bounds[j].lo,target_particle.bounds[j].hi
 
     mid=(lo+hi)/2
 
+    left_particle_ranges = list(cell.particle_ranges)
+    right_particle_ranges = list(cell.particle_ranges)
 
-    b1=[[Bounds(bb.lo, bb.hi) for bb in x.bounds] for x in cell.particle_ranges]
-    b2=[[Bounds(bb.lo, bb.hi) for bb in x.bounds] for x in cell.particle_ranges]
+    left_bounds = list(target_particle.bounds)
+    right_bounds = list(target_particle.bounds)
+
+    left_bounds[j]=Bounds(lo,mid)
+    right_bounds[j]=Bounds(mid,hi)
+
+    left_particle_ranges[i]=Particle_Ranges(
+        bounds=left_bounds,
+        fixed=target_particle.fixed.copy()
+    )
+    right_particle_ranges[i]=Particle_Ranges(
+        bounds=right_bounds,
+        fixed=target_particle.fixed.copy()
+    )
 
 
-    b1[i][j]=Bounds(lo,mid)
-    b2[i][j]=Bounds(mid,hi)
-
-
-    return [
+    children = [
         Cell(
-            [ Particle_Ranges( bounds=x, fixed=cell.particle_ranges[k].fixed.copy())
-                for k, x in enumerate(b1) ],
+            left_particle_ranges,
             cell.depth+1
         ),
         Cell(
-            [ Particle_Ranges( bounds=x, fixed=cell.particle_ranges[k].fixed.copy())
-                for k, x in enumerate(b2) ],
+            right_particle_ranges,
             cell.depth+1
         )
     ]
+
+    return children
+
+
+def split(cell):
+
+    largest = _find_split_axis(cell)
+
+    if largest is None:
+        return []
+
+    i, j = largest
+    return _split_on_axis(cell, i, j)
+
+
+def split_with_index(cell):
+
+    largest = _find_split_axis(cell)
+
+    if largest is None:
+        return [], None
+
+    i, j = largest
+    return _split_on_axis(cell, i, j), i

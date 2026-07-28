@@ -1,11 +1,60 @@
 import numpy as np
+import importlib
+import builtins
+from functools import lru_cache
 from geometry import spherical_to_cart
+
+def _load_njit():
+    try:
+        return importlib.import_module("numba").njit, True
+    except ImportError:
+        def _identity_njit(*args, **kwargs):
+            def _decorator(func):
+                return func
+            return _decorator
+        return _identity_njit, False
+
+
+njit, NUMBA_ENABLED = _load_njit()
+
+if not getattr(builtins, "_THOMPSON_NUMBA_STARTUP_PRINTED", False):
+    status = "enabled" if NUMBA_ENABLED else "disabled"
+    print(f"[startup] Numba JIT: {status}")
+    setattr(builtins, "_THOMPSON_NUMBA_STARTUP_PRINTED", True)
+
+
+@njit(cache=True)
+def _max_pair_distance(c1, c2):
+    maxd = 0.0
+
+    for i in range(c1.shape[0]):
+        for j in range(c2.shape[0]):
+            dx = c1[i, 0] - c2[j, 0]
+            dy = c1[i, 1] - c2[j, 1]
+            dz = c1[i, 2] - c2[j, 2]
+            d = np.sqrt(dx * dx + dy * dy + dz * dz)
+
+            if d > maxd:
+                maxd = d
+
+    return maxd
 
 
 def corner_points(box):
 
-    theta=[ box[0].lo, box[0].hi ]
-    phi=[ box[1].lo, box[1].hi]
+    theta_lo = box[0].lo
+    theta_hi = box[0].hi
+    phi_lo = box[1].lo
+    phi_hi = box[1].hi
+
+    return _corner_points_cached(theta_lo, theta_hi, phi_lo, phi_hi)
+
+
+@lru_cache(maxsize=200000)
+def _corner_points_cached(theta_lo, theta_hi, phi_lo, phi_hi):
+
+    theta=[ theta_lo, theta_hi ]
+    phi=[ phi_lo, phi_hi ]
 
     pts=[]
 
@@ -17,7 +66,7 @@ def corner_points(box):
                 spherical_to_cart(t,p)
             )
 
-    return pts
+    return np.asarray(pts, dtype=np.float64)
 
 
 
@@ -28,14 +77,7 @@ def pair_lower_bound(box1,box2):
     c1=corner_points(box1)
     c2=corner_points(box2)
 
-    maxd=0
-
-    for a in c1:
-        for b in c2:
-
-            d=np.linalg.norm(a-b)
-
-            maxd=max(maxd,d)
+    maxd = _max_pair_distance(c1, c2)
 
     if maxd == 0:
         return float("inf")
@@ -58,3 +100,36 @@ def energy_lower_bound(cell):
             E += pair_lower_bound( bounds[i], bounds[j])
 
     return E
+
+
+def energy_lower_bound_children(parent_cell, parent_lb, children, split_particle_index):
+
+    if split_particle_index is None:
+        return [energy_lower_bound(child) for child in children]
+
+    parent_bounds = [pr.bounds for pr in parent_cell.particle_ranges]
+    n = len(parent_bounds)
+
+    old_terms = 0.0
+    split_parent_bounds = parent_bounds[split_particle_index]
+
+    for k in range(n):
+        if k == split_particle_index:
+            continue
+        old_terms += pair_lower_bound(split_parent_bounds, parent_bounds[k])
+
+    child_lbs = []
+
+    for child in children:
+        child_bounds = [pr.bounds for pr in child.particle_ranges]
+        split_child_bounds = child_bounds[split_particle_index]
+
+        new_terms = 0.0
+        for k in range(n):
+            if k == split_particle_index:
+                continue
+            new_terms += pair_lower_bound(split_child_bounds, child_bounds[k])
+
+        child_lbs.append(parent_lb - old_terms + new_terms)
+
+    return child_lbs

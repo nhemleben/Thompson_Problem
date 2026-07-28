@@ -1,5 +1,6 @@
 import heapq
 from itertools import count
+import time
 
 from matplotlib.pyplot import draw
 
@@ -12,7 +13,15 @@ from visualizations import visualize_parameter_mesh
 from visualizations import visualize_final_minimum
 
 
-def search(n,target_depth=12, visualize_search=False, visualize_all_particles=False):
+def search(
+    n,
+    target_depth=12,
+    visualize_search=False,
+    visualize_all_particles=False,
+    visualize_mesh = False,
+    show_progress=True,
+    progress_update_every=10000,
+):
 
 
     root=initial_cell(n)
@@ -35,10 +44,40 @@ def search(n,target_depth=12, visualize_search=False, visualize_all_particles=Fa
     best=float("inf")
     best_config=None
 
+    processed_nodes = 0
+    estimated_total_nodes = (2 ** (target_depth + 1)) - 1
+    progress_line_width = 0
+    start_time = time.perf_counter()
+
+    def _print_progress_line(current_nodes):
+        nonlocal progress_line_width
+        percent = min(100.0, (current_nodes / estimated_total_nodes) * 100)
+        elapsed = time.perf_counter() - start_time
+        if current_nodes > 0:
+            seconds_per_1000 = (elapsed / current_nodes) * 1000
+            rate_text = f"{seconds_per_1000:.3f}s/1000 nodes"
+        else:
+            rate_text = "n/a s/1000 nodes"
+        line = (
+            f"Progress: {percent:.1f}% "
+            f"({current_nodes}/{estimated_total_nodes} estimated nodes, {rate_text})"
+        )
+        progress_line_width = max(progress_line_width, len(line))
+        print(line.ljust(progress_line_width), end="\r", flush=True)
+
+    if show_progress:
+        _print_progress_line(0)
+
 
     while queue:
 
         lb,_,cell=heapq.heappop(queue)
+        processed_nodes += 1
+
+        if show_progress and (
+            processed_nodes % progress_update_every == 0 or not queue
+        ):
+            _print_progress_line(processed_nodes)
 
         if visualize_search:
             active_cells.append(cell)
@@ -70,17 +109,27 @@ def search(n,target_depth=12, visualize_search=False, visualize_all_particles=Fa
             best=E
             best_config=config
 
+            if show_progress:
+                print()
             print( "new", best)
 
 
         if cell.depth < target_depth:
 
-            for child in split(cell):
+            children, split_particle_index = split_with_index(cell)
+            child_lbs = energy_lower_bound_children(
+                cell,
+                lb,
+                children,
+                split_particle_index
+            )
+
+            for child, child_lb in zip(children, child_lbs):
 
                 heapq.heappush(
                     queue,
                     (
-                    energy_lower_bound(child),
+                    child_lb,
                     next(tie_breaker),
                     child
                     )
@@ -94,8 +143,10 @@ def search(n,target_depth=12, visualize_search=False, visualize_all_particles=Fa
                     bounds,
                     particle=particle
                 )
-        visualize_final_minimum.plot_final_minimum(best_config, best)
 
+    #always visualize final configuration.
+    visualize_final_minimum.plot_final_minimum(best_config, best)
+    if visualize_mesh:
         visualize_parameter_mesh.visualize_parameter_mesh(
             active_cells,
             particle_indexes=range(n),
@@ -104,5 +155,19 @@ def search(n,target_depth=12, visualize_search=False, visualize_all_particles=Fa
 
         #print(active_cells)
         #print(bounds)
+
+    if show_progress:
+        elapsed = time.perf_counter() - start_time
+        if processed_nodes > 0:
+            seconds_per_1000 = (elapsed / processed_nodes) * 1000
+            rate_text = f"{seconds_per_1000:.3f}s/1000 nodes"
+        else:
+            rate_text = "n/a s/1000 nodes"
+
+        final_line = (
+            f"Progress: 100.0% (processed {processed_nodes} nodes, {rate_text})"
+        )
+        progress_line_width = max(progress_line_width, len(final_line))
+        print(final_line.ljust(progress_line_width))
 
     return best,best_config

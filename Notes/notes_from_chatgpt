@@ -1,0 +1,48 @@
+
+X1. Turn off visualization during search runs.
+In ngeneral.py, `visualize_search=True` stores every active cell and later renders plots. For `n=6, depth=15`, this is very expensive in both memory and time.
+Use:
+`visualize_search=False, visualize_mesh=False`
+
+X2. Turn off or throttle progress/printing.
+In search.py, progress and `new` prints happen in the hot loop. Console I/O is slow.
+For fastest runs:
+`show_progress=False`
+If needed:
+`progress_update_every=10000` (or higher).
+
+x3. Stop doing full lower-bound recomputation for every child.
+In bound.py, `energy_lower_bound(cell)` recomputes all pair terms from scratch, which is \(O(n^2)\) per node.
+Carry parent bound forward and update only terms involving the split particle index. That reduces bound-update work to \(O(n)\) per child.
+
+x4. Cache per-box corner points (or trigonometric terms).
+In bound.py, bound.py, and energy.py, the same spherical conversions are repeated a lot.
+Memoize `corner_points` and optionally midpoint cartesian points keyed by `(lo, hi)` tuples. This usually gives a noticeable speedup.
+
+X5. Replace repeated object-heavy allocations in split.
+In partition.py, each split deep-copies many dataclass objects.
+Use lighter structures for hot paths (tuples/arrays), or a custom clone that only copies the one modified interval.
+
+6. Improve branching strategy.
+In partition.py, you split only the largest interval. Better pruning often comes from splitting the interval that most reduces uncertainty in energy bound, not just angular width.
+
+7. Add an early-stop criterion when bound gap is small.
+In search.py, you prune only via `lb >= best`.
+Also stop globally when `best - current_global_lb < eps`. This can cut huge tail work.
+
+8. Parallelize child bound evaluation.
+In search.py, each child’s `energy_lower_bound(child)` is independent.
+Use multiprocessing for bound calculations (process pool), especially for larger `n`.
+
+x9. Use Numba/Cython for numerical kernels.
+The hot loops are in bound.py and energy.py.
+JIT-compiling those loops can provide large speedups with minimal algorithm changes.
+
+x10. Keep symmetry reduction strict in initialization.
+inital_part.py already fixes some coordinates. Tightening this further (without excluding valid minima) reduces search volume substantially.
+
+Most immediate wins for you:
+1) disable visualizations during compute,
+2) reduce printing/progress frequency,
+3) incremental lower-bound updates from parent to child.  
+Those three alone should make a major difference.
