@@ -170,7 +170,7 @@ def monte_carlo_test():
 
     np.random.seed(1)
 
-    for n in [3,4,5,6]:
+    for n in range(3,20):
 
         for _ in range(1000):
 

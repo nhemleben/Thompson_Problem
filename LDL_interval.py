@@ -2,6 +2,25 @@ from intvalpy import Interval
 
 
 def interval_ldlt(A):
+    """
+    Perform an interval LDL^T decomposition of a symmetric matrix A.
+
+    Parameters
+    ----------
+    A : list of list of Interval
+        Symmetric matrix with interval entries.
+
+    Returns
+    -------
+    L : list of list of Interval
+        Lower triangular matrix with unit diagonal.
+    D : list of Interval
+        Diagonal matrix as a list of intervals.
+
+    Notes
+    -----
+    If the matrix is not positive definite, the function returns None.
+    """
 
     n = len(A)
 
@@ -22,7 +41,7 @@ def interval_ldlt(A):
         # Rigorous proof fails here
         #
 
-        if d.lo <= 0:
+        if d.inf <= 0: #note infimum not infinity
             return None
 
         D[k]=d
