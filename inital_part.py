@@ -1,6 +1,6 @@
 from partition import Particle_Ranges, Bounds, Cell
 import numpy as np
-import angle_min from bound
+from bound import angle_min
 
 
 def initial_cell(n):
