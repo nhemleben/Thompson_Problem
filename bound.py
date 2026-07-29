@@ -1,8 +1,18 @@
 import numpy as np
+from geometry import spherical_to_cart
+from known_optimal import L_n
 import importlib
 import builtins
 from functools import lru_cache
-from geometry import spherical_to_cart
+
+def d_min(n):
+    minimum_radius = 1/(L_n(n) - (n-2)/2)
+    return minimum_radius
+
+def angle_min(n):
+    alpha_min = 2 * np.arcsin( d_min(n) /2)
+    return alpha_min
+
 
 def _load_njit():
     try:
@@ -38,7 +48,6 @@ def _max_pair_distance(c1, c2):
                 maxd = d
 
     return maxd
-
 
 def corner_points(box):
 
@@ -117,16 +126,10 @@ def _child_lb_task(args):
     return parent_lb - old_terms + new_terms
 
 
-def energy_lower_bound_children(
-    parent_cell,
-    parent_lb,
-    children,
-    split_particle_index,
-    pool=None,
-):
+def build_child_lb_tasks(parent_cell, parent_lb, children, split_particle_index):
 
     if split_particle_index is None:
-        return [energy_lower_bound(child) for child in children]
+        return None
 
     parent_bounds = [pr.bounds for pr in parent_cell.particle_ranges]
     n = len(parent_bounds)
@@ -141,14 +144,39 @@ def energy_lower_bound_children(
 
     child_bounds_list = [[pr.bounds for pr in child.particle_ranges] for child in children]
 
-    if pool is not None and len(child_bounds_list) > 1:
-        tasks = [
-            (parent_lb, old_terms, split_particle_index, child_bounds)
-            for child_bounds in child_bounds_list
-        ]
-        return pool.map(_child_lb_task, tasks)
-
     return [
-        _child_lb_task((parent_lb, old_terms, split_particle_index, child_bounds))
+        (parent_lb, old_terms, split_particle_index, child_bounds)
         for child_bounds in child_bounds_list
     ]
+
+
+def evaluate_child_lb_tasks(tasks, pool=None):
+
+    if not tasks:
+        return []
+
+    if pool is not None and len(tasks) > 1:
+        return pool.map(_child_lb_task, tasks)
+
+    return [_child_lb_task(task) for task in tasks]
+
+
+def energy_lower_bound_children(
+    parent_cell,
+    parent_lb,
+    children,
+    split_particle_index,
+    pool=None,
+):
+
+    if split_particle_index is None:
+        return [energy_lower_bound(child) for child in children]
+
+    tasks = build_child_lb_tasks(
+        parent_cell,
+        parent_lb,
+        children,
+        split_particle_index
+    )
+
+    return evaluate_child_lb_tasks(tasks, pool=pool)
