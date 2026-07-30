@@ -25,7 +25,8 @@ from energy import thompson_energy
 from search import (
     _build_even_mesh,
     _center_config,
-    _min_separation_cell_possible,
+    _min_separation_state_from_cell,
+    _min_separation_state_from_parent,
     _ordered_theta_center,
     _ordered_theta_possible,
     _respects_min_separation,
@@ -504,7 +505,19 @@ def search(
 
         for cell, root_lb in zip(initial_cells, initial_lbs):
             if root_lb is not None:
-                heapq.heappush(queue, (root_lb, next(tie_breaker), cell))
+                min_sep_state = None
+                if use_min_separation:
+                    min_sep_ok, min_sep_state = _min_separation_state_from_cell(
+                        cell,
+                        d_min=d_min,
+                        alpha_min=alpha_min,
+                        cos_alpha_min=min_sep_cos_alpha,
+                        d_min_sq=min_sep_d_sq,
+                    )
+                    if not min_sep_ok:
+                        continue
+
+                heapq.heappush(queue, (root_lb, next(tie_breaker), cell, min_sep_state))
 
         use_batched_parallel = parallel_child_bounds and parallel_batch_size > 1
 
@@ -514,9 +527,10 @@ def search(
                 frontier = [heapq.heappop(queue) for _ in range(batch_count)]
 
                 pending_children = []
+                pending_children_states = []
                 pending_tasks = []
 
-                for lb, _, cell in frontier:
+                for lb, _, cell, parent_min_sep_state in frontier:
                     processed_nodes += 1
 
                     if show_progress and (processed_nodes % progress_update_every == 0):
@@ -532,14 +546,15 @@ def search(
                     if not _ordered_theta_possible(cell):
                         continue
 
-                    if use_min_separation:
-                        if not _min_separation_cell_possible(
+                    if use_min_separation and parent_min_sep_state is None:
+                        min_sep_ok, parent_min_sep_state = _min_separation_state_from_cell(
                             cell,
                             d_min=d_min,
                             alpha_min=alpha_min,
                             cos_alpha_min=min_sep_cos_alpha,
                             d_min_sq=min_sep_d_sq,
-                        ):
+                        )
+                        if not min_sep_ok:
                             continue
 
                     config = _center_config(cell)
@@ -580,7 +595,7 @@ def search(
                         print("new", best)
 
                     if cell.depth < target_depth:
-                        children, _ = split_with_index(cell)
+                        children, split_particle_index = split_with_index(cell)
                         children = [
                             child for child in children if _ordered_theta_possible(child)
                         ]
@@ -588,19 +603,50 @@ def search(
                         if not children:
                             continue
 
-                        pending_children.extend(children)
+                        feasible_children = []
+                        feasible_states = []
+
+                        for child in children:
+                            if use_min_separation:
+                                child_ok, child_state = _min_separation_state_from_parent(
+                                    parent_min_sep_state,
+                                    cell,
+                                    child,
+                                    split_particle_index,
+                                    d_min=d_min,
+                                    alpha_min=alpha_min,
+                                    cos_alpha_min=min_sep_cos_alpha,
+                                    d_min_sq=min_sep_d_sq,
+                                )
+                                if not child_ok:
+                                    continue
+                            else:
+                                child_state = None
+
+                            feasible_children.append(child)
+                            feasible_states.append(child_state)
+
+                        if not feasible_children:
+                            continue
+
+                        pending_children.extend(feasible_children)
+                        pending_children_states.extend(feasible_states)
                         pending_tasks.extend(
-                            (n, child, int(iv_dps), best) for child in children
+                            (n, child, int(iv_dps), best) for child in feasible_children
                         )
 
                 if pending_tasks:
                     child_lbs = _evaluate_child_lb_tasks(pending_tasks, pool=pool)
 
-                    for child, child_lb in zip(pending_children, child_lbs):
+                    for child, child_lb, child_state in zip(
+                        pending_children,
+                        child_lbs,
+                        pending_children_states,
+                    ):
                         if child_lb is not None and child_lb < best:
-                            heapq.heappush(queue, (child_lb, next(tie_breaker), child))
+                            heapq.heappush(queue, (child_lb, next(tie_breaker), child, child_state))
             else:
-                lb, _, cell = heapq.heappop(queue)
+                lb, _, cell, parent_min_sep_state = heapq.heappop(queue)
                 processed_nodes += 1
 
                 if show_progress and (
@@ -618,14 +664,15 @@ def search(
                 if not _ordered_theta_possible(cell):
                     continue
 
-                if use_min_separation:
-                    if not _min_separation_cell_possible(
+                if use_min_separation and parent_min_sep_state is None:
+                    min_sep_ok, parent_min_sep_state = _min_separation_state_from_cell(
                         cell,
                         d_min=d_min,
                         alpha_min=alpha_min,
                         cos_alpha_min=min_sep_cos_alpha,
                         d_min_sq=min_sep_d_sq,
-                    ):
+                    )
+                    if not min_sep_ok:
                         continue
 
                 config = _center_config(cell)
@@ -666,17 +713,46 @@ def search(
                     print("new", best)
 
                 if cell.depth < target_depth:
-                    children, _ = split_with_index(cell)
+                    children, split_particle_index = split_with_index(cell)
                     children = [
                         child for child in children if _ordered_theta_possible(child)
                     ]
 
-                    child_tasks = [(n, child, int(iv_dps), best) for child in children]
+                    if not children:
+                        continue
+
+                    feasible_children = []
+                    feasible_states = []
+
+                    for child in children:
+                        if use_min_separation:
+                            child_ok, child_state = _min_separation_state_from_parent(
+                                parent_min_sep_state,
+                                cell,
+                                child,
+                                split_particle_index,
+                                d_min=d_min,
+                                alpha_min=alpha_min,
+                                cos_alpha_min=min_sep_cos_alpha,
+                                d_min_sq=min_sep_d_sq,
+                            )
+                            if not child_ok:
+                                continue
+                        else:
+                            child_state = None
+
+                        feasible_children.append(child)
+                        feasible_states.append(child_state)
+
+                    if not feasible_children:
+                        continue
+
+                    child_tasks = [(n, child, int(iv_dps), best) for child in feasible_children]
                     child_lbs = _evaluate_child_lb_tasks(child_tasks, pool=pool)
 
-                    for child, child_lb in zip(children, child_lbs):
+                    for child, child_lb, child_state in zip(feasible_children, child_lbs, feasible_states):
                         if child_lb is not None and child_lb < best:
-                            heapq.heappush(queue, (child_lb, next(tie_breaker), child))
+                            heapq.heappush(queue, (child_lb, next(tie_breaker), child, child_state))
 
         if show_progress and not queue:
             _print_progress_line(processed_nodes)

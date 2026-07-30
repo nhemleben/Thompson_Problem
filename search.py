@@ -182,6 +182,102 @@ def _min_separation_cell_possible(
     return True
 
 
+def _pair_key(i, j):
+
+    if i < j:
+        return (i, j)
+    return (j, i)
+
+
+def _min_separation_state_from_cell(
+    cell,
+    d_min=None,
+    alpha_min=None,
+    epsilon=1e-15,
+    cos_alpha_min=None,
+    d_min_sq=None,
+):
+
+    if d_min is None and alpha_min is None:
+        return True, None
+
+    if cos_alpha_min is None and alpha_min is not None:
+        cos_alpha_min = float(np.cos(alpha_min))
+
+    if d_min_sq is None and d_min is not None:
+        d_min_sq = float(d_min) * float(d_min)
+
+    bounds = [particle_range.bounds for particle_range in cell.particle_ranges]
+    pair_state = {}
+
+    for i in range(len(bounds)):
+        b1 = bounds[i]
+        for j in range(i + 1, len(bounds)):
+            b2 = bounds[j]
+            feasible = min_separation_pair_possible(
+                b1,
+                b2,
+                d_min_sq=d_min_sq,
+                cos_alpha_min=cos_alpha_min,
+                epsilon=epsilon,
+            )
+            pair_state[(i, j)] = feasible
+
+            if not feasible:
+                return False, pair_state
+
+    return True, pair_state
+
+
+def _min_separation_state_from_parent(
+    parent_state,
+    parent_cell,
+    child_cell,
+    split_particle_index,
+    d_min=None,
+    alpha_min=None,
+    epsilon=1e-15,
+    cos_alpha_min=None,
+    d_min_sq=None,
+):
+
+    if d_min is None and alpha_min is None:
+        return True, None
+
+    if split_particle_index is None or parent_state is None:
+        return _min_separation_state_from_cell(
+            child_cell,
+            d_min=d_min,
+            alpha_min=alpha_min,
+            epsilon=epsilon,
+            cos_alpha_min=cos_alpha_min,
+            d_min_sq=d_min_sq,
+        )
+
+    child_state = dict(parent_state)
+    child_bounds = [particle_range.bounds for particle_range in child_cell.particle_ranges]
+
+    i = split_particle_index
+    for k in range(len(child_bounds)):
+        if k == i:
+            continue
+
+        key = _pair_key(i, k)
+        feasible = min_separation_pair_possible(
+            child_bounds[i],
+            child_bounds[k],
+            d_min_sq=d_min_sq,
+            cos_alpha_min=cos_alpha_min,
+            epsilon=epsilon,
+        )
+        child_state[key] = feasible
+
+        if not feasible:
+            return False, child_state
+
+    return True, child_state
+
+
 def search(
     n,
     target_depth=12,
@@ -258,12 +354,25 @@ def search(
             initial_lbs = [energy_lower_bound(cell) for cell in initial_cells]
 
         for cell, lb_value in zip(initial_cells, initial_lbs):
+            min_sep_state = None
+            if use_min_separation:
+                min_sep_ok, min_sep_state = _min_separation_state_from_cell(
+                    cell,
+                    d_min=d_min,
+                    alpha_min=alpha_min,
+                    cos_alpha_min=min_sep_cos_alpha,
+                    d_min_sq=min_sep_d_sq,
+                )
+                if not min_sep_ok:
+                    continue
+
             heapq.heappush(
                 queue,
                 (
                     lb_value,
                     next(tie_breaker),
                     cell,
+                    min_sep_state,
                 )
             )
 
@@ -276,9 +385,10 @@ def search(
                 frontier = [heapq.heappop(queue) for _ in range(batch_count)]
 
                 pending_children = []
+                pending_children_states = []
                 pending_tasks = []
 
-                for lb, _, cell in frontier:
+                for lb, _, cell, parent_min_sep_state in frontier:
                     processed_nodes += 1
 
                     if show_progress and (
@@ -296,14 +406,15 @@ def search(
                     if not _ordered_theta_possible(cell):
                         continue
 
-                    if use_min_separation:
-                        if not _min_separation_cell_possible(
+                    if use_min_separation and parent_min_sep_state is None:
+                        min_sep_ok, parent_min_sep_state = _min_separation_state_from_cell(
                             cell,
                             d_min=d_min,
                             alpha_min=alpha_min,
                             cos_alpha_min=min_sep_cos_alpha,
                             d_min_sq=min_sep_d_sq,
-                        ):
+                        )
+                        if not min_sep_ok:
                             continue
 
                     config=_center_config(cell)
@@ -341,34 +452,62 @@ def search(
                         if not children:
                             continue
 
+                        feasible_children = []
+                        feasible_states = []
+
+                        for child in children:
+                            if use_min_separation:
+                                child_ok, child_state = _min_separation_state_from_parent(
+                                    parent_min_sep_state,
+                                    cell,
+                                    child,
+                                    split_particle_index,
+                                    d_min=d_min,
+                                    alpha_min=alpha_min,
+                                    cos_alpha_min=min_sep_cos_alpha,
+                                    d_min_sq=min_sep_d_sq,
+                                )
+                                if not child_ok:
+                                    continue
+                            else:
+                                child_state = None
+
+                            feasible_children.append(child)
+                            feasible_states.append(child_state)
+
+                        if not feasible_children:
+                            continue
+
                         tasks = build_child_lb_tasks(
                             cell,
                             lb,
-                            children,
+                            feasible_children,
                             split_particle_index
                         )
 
                         if not tasks:
                             continue
 
-                        pending_children.extend(children)
+                        pending_children.extend(feasible_children)
+                        pending_children_states.extend(feasible_states)
                         pending_tasks.extend(tasks)
 
                 if pending_tasks:
                     child_lbs = evaluate_child_lb_tasks(pending_tasks, pool=pool)
 
-                    for child, child_lb in zip(pending_children, child_lbs):
+                    for child, child_lb, child_state in zip(pending_children, child_lbs, pending_children_states):
 
                         heapq.heappush(
                             queue,
                             (
                             child_lb,
                             next(tie_breaker),
-                            child
+                            child,
+                            child_state,
                             )
                         )
             else:
-                lb,_,cell=heapq.heappop(queue)
+                lb,_,cell,parent_min_sep_state=heapq.heappop(queue)
                 processed_nodes += 1
 
                 if show_progress and (
@@ -386,15 +525,15 @@ def search(
                 if not _ordered_theta_possible(cell):
                     continue
 
-
-                if use_min_separation:
-                    if not _min_separation_cell_possible(
+                if use_min_separation and parent_min_sep_state is None:
+                    min_sep_ok, parent_min_sep_state = _min_separation_state_from_cell(
                         cell,
                         d_min=d_min,
                         alpha_min=alpha_min,
                         cos_alpha_min=min_sep_cos_alpha,
                         d_min_sq=min_sep_d_sq,
-                    ):
+                    )
+                    if not min_sep_ok:
                         continue
 
                 # test center point
@@ -435,22 +574,49 @@ def search(
                     if not children:
                         continue
 
+                    feasible_children = []
+                    feasible_states = []
+
+                    for child in children:
+                        if use_min_separation:
+                            child_ok, child_state = _min_separation_state_from_parent(
+                                parent_min_sep_state,
+                                cell,
+                                child,
+                                split_particle_index,
+                                d_min=d_min,
+                                alpha_min=alpha_min,
+                                cos_alpha_min=min_sep_cos_alpha,
+                                d_min_sq=min_sep_d_sq,
+                            )
+                            if not child_ok:
+                                continue
+                        else:
+                            child_state = None
+
+                        feasible_children.append(child)
+                        feasible_states.append(child_state)
+
+                    if not feasible_children:
+                        continue
+
                     child_lbs = energy_lower_bound_children(
                         cell,
                         lb,
-                        children,
+                        feasible_children,
                         split_particle_index,
                         pool=pool
                     )
 
-                    for child, child_lb in zip(children, child_lbs):
+                    for child, child_lb, child_state in zip(feasible_children, child_lbs, feasible_states):
 
                         heapq.heappush(
                             queue,
                             (
                             child_lb,
                             next(tie_breaker),
-                            child
+                            child,
+                            child_state,
                             )
                         )
 

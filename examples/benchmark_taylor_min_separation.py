@@ -74,8 +74,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="Benchmark Taylor search with min-separation pruning off vs on"
     )
-    parser.add_argument("--n", type=int, default=5, help="Number of particles")
-    parser.add_argument("--depth", type=int, default=3, help="Target search depth")
+    parser.add_argument("--n", type=int, default=4, help="Number of particles")
+    parser.add_argument("--depth", type=int, default=1, help="Target search depth")
     parser.add_argument("--repeats", type=int, default=3, help="Runs per mode")
     parser.add_argument("--iv-dps", type=int, default=30, help="mpmath interval precision")
     parser.add_argument("--parallel-child-bounds", action="store_true")
