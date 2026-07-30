@@ -40,6 +40,7 @@ def run_search_once(
             parallel_child_bounds=parallel_enabled,
             parallel_workers=workers,
             parallel_batch_size=batch_size,
+            reuse_worker_pool=parallel_enabled,
             iv_dps=iv_dps,
             initial_mesh_side_length=initial_mesh_side_length,
         )

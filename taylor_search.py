@@ -37,6 +37,10 @@ from visualizations.global_visualize import draw_global_search
 mp.iv.dps = 50
 sp_any: Any = sp
 _TAYLOR_CACHE_VERSION = 1
+_WORKER_MODEL: TaylorModel | None = None
+_WORKER_N: int | None = None
+_WORKER_IV_DPS: int | None = None
+_REUSABLE_POOLS: dict[tuple[int, int, int], Any] = {}
 
 
 def _set_iv_dps(iv_dps: int) -> int:
@@ -413,7 +417,48 @@ def _taylor_lower_bound(cell, model: TaylorModel) -> float:
     return lower_bound
 
 
+def _init_taylor_worker(n: int, iv_dps: int):
+    global _WORKER_MODEL, _WORKER_N, _WORKER_IV_DPS
+
+    _WORKER_N = int(n)
+    _WORKER_IV_DPS = _set_iv_dps(int(iv_dps))
+    _WORKER_MODEL = build_taylor_model(_WORKER_N)
+
+
+def _get_reusable_pool(n: int, iv_dps: int, workers: int):
+    key = (int(n), int(iv_dps), int(workers))
+    pool = _REUSABLE_POOLS.get(key)
+
+    if pool is not None:
+        return pool
+
+    pool = mp_pool.Pool(
+        processes=int(workers),
+        initializer=_init_taylor_worker,
+        initargs=(int(n), int(iv_dps)),
+    )
+    _REUSABLE_POOLS[key] = pool
+    return pool
+
+
+def shutdown_reusable_worker_pools():
+    for pool in _REUSABLE_POOLS.values():
+        pool.close()
+        pool.join()
+
+    _REUSABLE_POOLS.clear()
+
+
 def _child_taylor_lb_task(args):
+    if len(args) == 2:
+        child, best_energy = args
+        model = _WORKER_MODEL
+
+        if model is None:
+            raise RuntimeError("Worker model not initialized; pool initializer was not run")
+
+        return _cascading_taylor_lower_bound(child, model, best_energy=best_energy)[0]
+
     n, child, iv_dps, best_energy = args
     _set_iv_dps(iv_dps)
     model = build_taylor_model(n)
@@ -447,6 +492,7 @@ def search(
     d_min=None,
     alpha_min=None,
     initial_mesh_side_length=0.1,
+    reuse_worker_pool=True,
 ):
     iv_dps = _set_iv_dps(iv_dps)
     model = build_taylor_model(n)
@@ -489,8 +535,20 @@ def search(
         _print_progress_line(0)
 
     pool = None
+    pool_owned = False
     if parallel_child_bounds:
-        pool = mp_pool.Pool(processes=parallel_workers)
+        workers = int(parallel_workers) if parallel_workers is not None else mp_pool.cpu_count()
+
+        if reuse_worker_pool:
+            pool = _get_reusable_pool(n, int(iv_dps), workers)
+            pool_owned = False
+        else:
+            pool = mp_pool.Pool(
+                processes=workers,
+                initializer=_init_taylor_worker,
+                initargs=(int(n), int(iv_dps)),
+            )
+            pool_owned = True
 
     try:
         initial_cells = _build_even_mesh(
@@ -501,7 +559,7 @@ def search(
 
         if parallel_child_bounds and len(initial_cells) > 1:
             initial_tasks = [
-                (n, cell, int(iv_dps), float("inf"))
+                (cell, float("inf"))
                 for cell in initial_cells
             ]
             initial_lbs = _evaluate_child_lb_tasks(initial_tasks, pool=pool)
@@ -636,8 +694,18 @@ def search(
 
                         pending_children.extend(feasible_children)
                         pending_children_states.extend(feasible_states)
+
+                        task_items = []
+                        if pool is not None:
+                            task_items = [(child, best) for child in feasible_children]
+                        else:
+                            task_items = [
+                                (n, child, int(iv_dps), best)
+                                for child in feasible_children
+                            ]
+
                         pending_tasks.extend(
-                            (n, child, int(iv_dps), best) for child in feasible_children
+                            task_items
                         )
 
                 if pending_tasks:
@@ -752,7 +820,13 @@ def search(
                     if not feasible_children:
                         continue
 
-                    child_tasks = [(n, child, int(iv_dps), best) for child in feasible_children]
+                    if pool is not None:
+                        child_tasks = [(child, best) for child in feasible_children]
+                    else:
+                        child_tasks = [
+                            (n, child, int(iv_dps), best)
+                            for child in feasible_children
+                        ]
                     child_lbs = _evaluate_child_lb_tasks(child_tasks, pool=pool)
 
                     for child, child_lb, child_state in zip(feasible_children, child_lbs, feasible_states):
@@ -762,7 +836,7 @@ def search(
         if show_progress and not queue:
             _print_progress_line(processed_nodes)
     finally:
-        if pool is not None:
+        if pool is not None and pool_owned:
             pool.close()
             pool.join()
 
@@ -819,6 +893,7 @@ def main():
     parser.set_defaults(parallel_child_bounds=True)
     parser.add_argument("--parallel-workers", type=int, default=mp_pool.cpu_count())
     parser.add_argument("--parallel-batch-size", type=int, default=32)
+    parser.add_argument("--reuse-worker-pool", action="store_true")
     parser.add_argument("--iv-dps", type=int, default=50)
     parser.add_argument("--initial-mesh-side-length", type=float, default=0.1)
     parser.add_argument("--no-visualize-final", action="store_true")
@@ -835,6 +910,7 @@ def main():
         parallel_child_bounds=args.parallel_child_bounds,
         parallel_workers=args.parallel_workers,
         parallel_batch_size=args.parallel_batch_size,
+        reuse_worker_pool=args.reuse_worker_pool,
         iv_dps=args.iv_dps,
         initial_mesh_side_length=args.initial_mesh_side_length,
         visualize_final=not args.no_visualize_final,
