@@ -36,6 +36,14 @@ sp_any: Any = sp
 _TAYLOR_CACHE_VERSION = 1
 
 
+def _set_iv_dps(iv_dps: int) -> int:
+    value = int(iv_dps)
+    if value < 5:
+        raise ValueError("iv_dps must be >= 5")
+    mp.iv.dps = value
+    return value
+
+
 def _taylor_cache_path(n: int) -> Path:
     cache_dir = Path(__file__).resolve().parent / "symbolic_derivatives"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -321,16 +329,88 @@ def _taylor_enclosure(cell, model: TaylorModel):
     return result
 
 
+def _cascading_taylor_lower_bound(cell, model: TaylorModel, best_energy: float | None = None):
+    center, radius, intervals = _flat_center_and_radius(cell)
+    config = _center_config(cell)
+    center_energy = thompson_energy(config)
+    metric_radius = _spherical_metric_radius(cell)
+
+    # 1) Cheap: Lipschitz bound from center gradient norm
+    gradient = model.gradient(center)
+
+    def _abs_upper(value: Any) -> float:
+        try:
+            lo = float(value.a)
+            hi = float(value.b)
+            return max(abs(lo), abs(hi))
+        except Exception:
+            return abs(float(value))
+
+    grad_l1 = sum(_abs_upper(gi) for gi in gradient)
+    lipschitz_lb = center_energy - grad_l1 * metric_radius
+
+    if best_energy is not None and lipschitz_lb >= best_energy:
+        return None
+
+    dq = [_iv_interval(-r, r) for r in radius]
+    e0: Any = _iv_interval(center_energy, center_energy)
+
+    # 2) Slightly more expensive: linear Taylor bound
+    linear: Any = mp.iv.mpf(0)
+    for gi, dqi in zip(gradient, dq):
+        linear += gi * dqi
+
+    linear_interval: Any = e0 + linear
+    linear_lb = float(linear_interval.a)
+
+    if best_energy is not None and linear_lb >= best_energy:
+        return None
+
+    # 3) Expensive: quadratic Taylor bound
+    hessian = model.hessian(intervals)
+    quadratic: Any = mp.iv.mpf(0)
+    for i in range(len(dq)):
+        for j in range(len(dq)):
+            quadratic += dq[i] * hessian[i, j] * dq[j]
+
+    quadratic = quadratic * _iv_interval(0.5, 0.5)
+    quadratic_interval: Any = linear_interval + quadratic
+    quadratic_lb = float(quadratic_interval.a)
+
+    if best_energy is not None and quadratic_lb >= best_energy:
+        return None
+
+    # 4) Very expensive: cubic remainder bound
+    if model.third_derivative_usable:
+        try:
+            third_derivative = model.third_derivative(intervals)
+            third_norm = _tensor_frobenius_norm_bound(third_derivative)
+            third_bound = float(third_norm.b)
+        except Exception:
+            model.third_derivative_usable = False
+            third_bound = _fallback_third_derivative_bound(cell)
+    else:
+        third_bound = _fallback_third_derivative_bound(cell)
+
+    remainder_radius = third_bound / 6.0 * metric_radius ** 3
+    remainder: Any = _iv_interval(-remainder_radius, remainder_radius)
+
+    cubic_interval: Any = quadratic_interval + remainder
+    return float(cubic_interval.a)
+
+
 def _taylor_lower_bound(cell, model: TaylorModel) -> float:
-    enclosure = _taylor_enclosure(cell, model)
-    return float(enclosure.a)
+    lower_bound = _cascading_taylor_lower_bound(cell, model, best_energy=None)
+    if lower_bound is None:
+        return float("inf")
+    return lower_bound
 
 
 def _child_taylor_lb_task(args):
-    n, child, iv_dps = args
-    mp.iv.dps = iv_dps
+    n, child, iv_dps, best_energy = args
+    _set_iv_dps(iv_dps)
     model = build_taylor_model(n)
-    return _taylor_lower_bound(child, model)
+    return _cascading_taylor_lower_bound(child, model, best_energy=best_energy)
 
 
 def _evaluate_child_lb_tasks(tasks, pool=None):
@@ -359,7 +439,7 @@ def search(
     d_min=None,
     alpha_min=None,
 ):
-    mp.iv.dps = int(iv_dps)
+    iv_dps = _set_iv_dps(iv_dps)
     model = build_taylor_model(n)
     root = initial_cell(n)
     tie_breaker = count()
@@ -464,13 +544,15 @@ def search(
                             continue
 
                         pending_children.extend(children)
-                        pending_tasks.extend((n, child, int(iv_dps)) for child in children)
+                        pending_tasks.extend(
+                            (n, child, int(iv_dps), best) for child in children
+                        )
 
                 if pending_tasks:
                     child_lbs = _evaluate_child_lb_tasks(pending_tasks, pool=pool)
 
                     for child, child_lb in zip(pending_children, child_lbs):
-                        if child_lb < best:
+                        if child_lb is not None and child_lb < best:
                             heapq.heappush(queue, (child_lb, next(tie_breaker), child))
             else:
                 lb, _, cell = heapq.heappop(queue)
@@ -520,11 +602,11 @@ def search(
                         child for child in children if _ordered_theta_possible(child)
                     ]
 
-                    child_tasks = [(n, child, int(iv_dps)) for child in children]
+                    child_tasks = [(n, child, int(iv_dps), best) for child in children]
                     child_lbs = _evaluate_child_lb_tasks(child_tasks, pool=pool)
 
                     for child, child_lb in zip(children, child_lbs):
-                        if child_lb < best:
+                        if child_lb is not None and child_lb < best:
                             heapq.heappush(queue, (child_lb, next(tie_breaker), child))
 
         if show_progress and not queue:
