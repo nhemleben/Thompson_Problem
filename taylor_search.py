@@ -23,6 +23,7 @@ from inital_part import initial_cell
 from partition import split_with_index
 from energy import thompson_energy
 from search import (
+    _build_even_mesh,
     _center_config,
     _min_separation_cell_possible,
     _ordered_theta_center,
@@ -433,12 +434,13 @@ def search(
     show_progress=True,
     progress_update_every=10000,
     parallel_child_bounds=False,
-    parallel_workers=None,
-    parallel_batch_size=64,
+    parallel_workers=mp_pool.cpu_count(),
+    parallel_batch_size=32,
     iv_dps=50,
     visualize_final=True,
     d_min=None,
     alpha_min=None,
+    initial_mesh_side_length=0.1,
 ):
     iv_dps = _set_iv_dps(iv_dps)
     model = build_taylor_model(n)
@@ -448,9 +450,6 @@ def search(
     queue = []
     active_cells = []
     bounds = []
-
-    root_lb = _taylor_lower_bound(root, model)
-    heapq.heappush(queue, (root_lb, next(tie_breaker), root))
 
     best = float("inf")
     best_config = None
@@ -488,6 +487,25 @@ def search(
         pool = mp_pool.Pool(processes=parallel_workers)
 
     try:
+        initial_cells = _build_even_mesh(
+            root,
+            side_length=initial_mesh_side_length,
+            cell_filter=_ordered_theta_possible,
+        )
+
+        if parallel_child_bounds and len(initial_cells) > 1:
+            initial_tasks = [
+                (n, cell, int(iv_dps), float("inf"))
+                for cell in initial_cells
+            ]
+            initial_lbs = _evaluate_child_lb_tasks(initial_tasks, pool=pool)
+        else:
+            initial_lbs = [_taylor_lower_bound(cell, model) for cell in initial_cells]
+
+        for cell, root_lb in zip(initial_cells, initial_lbs):
+            if root_lb is not None:
+                heapq.heappush(queue, (root_lb, next(tie_breaker), cell))
+
         use_batched_parallel = parallel_child_bounds and parallel_batch_size > 1
 
         while queue:
@@ -714,10 +732,14 @@ def main():
     parser.add_argument("--visualize-search", action="store_true")
     parser.add_argument("--visualize-all-particles", action="store_true")
     parser.add_argument("--visualize-mesh", action="store_true")
-    parser.add_argument("--parallel-child-bounds", action="store_true")
-    parser.add_argument("--parallel-workers", type=int, default=None)
-    parser.add_argument("--parallel-batch-size", type=int, default=64)
+    parallel_group = parser.add_mutually_exclusive_group()
+    parallel_group.add_argument("--parallel-child-bounds", dest="parallel_child_bounds", action="store_true")
+    parallel_group.add_argument("--no-parallel-child-bounds", dest="parallel_child_bounds", action="store_false")
+    parser.set_defaults(parallel_child_bounds=True)
+    parser.add_argument("--parallel-workers", type=int, default=mp_pool.cpu_count())
+    parser.add_argument("--parallel-batch-size", type=int, default=32)
     parser.add_argument("--iv-dps", type=int, default=50)
+    parser.add_argument("--initial-mesh-side-length", type=float, default=0.1)
     parser.add_argument("--no-visualize-final", action="store_true")
     parser.add_argument("--no-show-progress", action="store_true")
     args = parser.parse_args()
@@ -733,6 +755,7 @@ def main():
         parallel_workers=args.parallel_workers,
         parallel_batch_size=args.parallel_batch_size,
         iv_dps=args.iv_dps,
+        initial_mesh_side_length=args.initial_mesh_side_length,
         visualize_final=not args.no_visualize_final,
     )
 

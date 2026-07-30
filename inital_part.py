@@ -4,6 +4,7 @@ from bound import angle_min
 
 
 def initial_cell(n):
+    phi_restriction = 0.1  # restriction for the phi coordinate chart
     phi_min = angle_min(n)
 
     bounds = [
@@ -14,7 +15,7 @@ def initial_cell(n):
         ),
         # particle 2 fixed on equator that goes through pole
         Particle_Ranges(
-            bounds = [ Bounds(0.0, 0.0), Bounds(phi_min,np.pi) ],
+            bounds = [ Bounds(0.0, 0.0), Bounds(phi_min,np.pi - phi_restriction) ],
             fixed = [True, False]
         )
     ]
@@ -23,7 +24,7 @@ def initial_cell(n):
         bounds.append(
             # particle 3 is limit to just 'eastern' hemisphere due to reflection symetry
             Particle_Ranges(
-                bounds = [ Bounds(0.0,np.pi,), Bounds(phi_min,np.pi,) ], 
+                bounds = [ Bounds(0.0,np.pi,), Bounds(phi_min,np.pi - phi_restriction,) ], 
                 fixed = [False, False]
             )
         )
@@ -31,7 +32,7 @@ def initial_cell(n):
     for i in range(n-3):
         bounds.append(
             Particle_Ranges(
-                bounds = [ Bounds(0.0,2*np.pi,), Bounds(phi_min,np.pi,) ], 
+                bounds = [ Bounds(0.0,2*np.pi,), Bounds(phi_min,np.pi - phi_restriction,) ], 
                 fixed = [False, False]
             )
         )

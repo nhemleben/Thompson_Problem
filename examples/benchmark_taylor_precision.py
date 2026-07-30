@@ -28,7 +28,7 @@ def parse_precisions(text: str) -> list[int]:
     return values
 
 
-def run_once(n: int, depth: int, iv_dps: int):
+def run_once(n: int, depth: int, iv_dps: int, initial_mesh_side_length: float):
     start = time.perf_counter()
     with contextlib.redirect_stdout(io.StringIO()):
         energy, config = search(
@@ -39,9 +39,11 @@ def run_once(n: int, depth: int, iv_dps: int):
             visualize_mesh=False,
             visualize_final=False,
             iv_dps=iv_dps,
+            initial_mesh_side_length=initial_mesh_side_length,
         )
     elapsed = time.perf_counter() - start
-    return elapsed, energy, len(config)
+    point_count = len(config) if config is not None else 0
+    return elapsed, energy, point_count
 
 
 def summarize(iv_dps: int, times: list[float], energy: float, points: int):
@@ -68,6 +70,7 @@ def main():
         default="30,40,50",
         help="Comma-separated iv_dps values",
     )
+    parser.add_argument("--initial-mesh-side-length", type=float, default=0.7)
     args = parser.parse_args()
 
     precision_values = parse_precisions(args.precisions)
@@ -75,6 +78,7 @@ def main():
     print("Taylor Precision Benchmark")
     print(f"  n={args.n}, depth={args.depth}, repeats={args.repeats}")
     print(f"  iv_dps values={precision_values}")
+    print(f"  initial_mesh_side_length={args.initial_mesh_side_length}")
     print()
 
     for iv_dps in precision_values:
@@ -83,7 +87,12 @@ def main():
         last_points = 0
 
         for _ in range(args.repeats):
-            elapsed, energy, points = run_once(args.n, args.depth, iv_dps)
+            elapsed, energy, points = run_once(
+                args.n,
+                args.depth,
+                iv_dps,
+                args.initial_mesh_side_length,
+            )
             times.append(elapsed)
             last_energy = energy
             last_points = points

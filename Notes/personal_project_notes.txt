@@ -4,3 +4,16 @@ Need to force the theta1<theta2 <theta3< ... order to reduce search space
     This is done but we generate the points first which seems less optimal then just not doing that 
     Added to follow up graveyard
 
+
+
+Need to fix the min seperation d_min logic so that it
+is not just killing cells that could split and make
+viable children that obey limits just cause
+the centers are far apart.
+
+
+
+This multithreading might have oversized batches no_show_progress
+Inital mesh mgiht be too large for testing
+
+

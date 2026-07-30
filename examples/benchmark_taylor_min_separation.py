@@ -6,6 +6,7 @@ import io
 import statistics
 import sys
 import time
+import multiprocessing as mp
 
 ROOT = str(Path(__file__).resolve().parents[1])
 if ROOT not in sys.path:
@@ -26,13 +27,15 @@ def run_once(
     parallel_child_bounds: bool,
     parallel_workers: int | None,
     parallel_batch_size: int,
+    initial_mesh_side_length: float,
 ):
     d_min_value = None
     alpha_min_value = None
 
     if use_min_separation:
         d_min_value = float(bound_module.d_min(n))
-        alpha_min_value = float(bound_module.angle_min(n))
+        #Only use the d_min value now, the alpha is redundant
+        #alpha_min_value = float(bound_module.angle_min(n))
 
     start = time.perf_counter()
     with contextlib.redirect_stdout(io.StringIO()):
@@ -49,6 +52,7 @@ def run_once(
             parallel_child_bounds=parallel_child_bounds,
             parallel_workers=parallel_workers,
             parallel_batch_size=parallel_batch_size,
+            initial_mesh_side_length=initial_mesh_side_length,
         )
     elapsed = time.perf_counter() - start
     point_count = len(config) if config is not None else 0
@@ -71,12 +75,13 @@ def main():
         description="Benchmark Taylor search with min-separation pruning off vs on"
     )
     parser.add_argument("--n", type=int, default=5, help="Number of particles")
-    parser.add_argument("--depth", type=int, default=8, help="Target search depth")
+    parser.add_argument("--depth", type=int, default=3, help="Target search depth")
     parser.add_argument("--repeats", type=int, default=3, help="Runs per mode")
-    parser.add_argument("--iv-dps", type=int, default=40, help="mpmath interval precision")
+    parser.add_argument("--iv-dps", type=int, default=30, help="mpmath interval precision")
     parser.add_argument("--parallel-child-bounds", action="store_true")
-    parser.add_argument("--parallel-workers", type=int, default=None)
-    parser.add_argument("--parallel-batch-size", type=int, default=64)
+    parser.add_argument("--parallel-workers", type=int, default=mp.cpu_count())
+    parser.add_argument("--parallel-batch-size", type=int, default=32)
+    parser.add_argument("--initial-mesh-side-length", type=float, default=1.7)
     args = parser.parse_args()
 
     print("Taylor Min-Separation Benchmark")
@@ -84,7 +89,8 @@ def main():
     print(
         "  parallel_child_bounds="
         f"{args.parallel_child_bounds}, parallel_workers={args.parallel_workers}, "
-        f"parallel_batch_size={args.parallel_batch_size}"
+        f"parallel_batch_size={args.parallel_batch_size}, "
+        f"initial_mesh_side_length={args.initial_mesh_side_length}"
     )
     print()
 
@@ -101,10 +107,12 @@ def main():
             parallel_child_bounds=args.parallel_child_bounds,
             parallel_workers=args.parallel_workers,
             parallel_batch_size=args.parallel_batch_size,
+            initial_mesh_side_length=args.initial_mesh_side_length,
         )
         off_times.append(elapsed)
         off_energy = energy
         off_points = points
+        print(f"  Off run: elapsed={elapsed:.4f}s, energy={energy:.12f}, points={points}")
 
     on_times: list[float] = []
     on_energy = 0.0
@@ -119,10 +127,12 @@ def main():
             parallel_child_bounds=args.parallel_child_bounds,
             parallel_workers=args.parallel_workers,
             parallel_batch_size=args.parallel_batch_size,
+            initial_mesh_side_length=args.initial_mesh_side_length,
         )
         on_times.append(elapsed)
         on_energy = energy
         on_points = points
+        print(f"  On run: elapsed={elapsed:.4f}s, energy={energy:.12f}, points={points}")
 
     summarize("min_sep OFF", off_times, off_energy, off_points)
     summarize("min_sep ON", on_times, on_energy, on_points)

@@ -7,6 +7,7 @@ import numpy as np
 
 from visualizations.global_visualize import draw_global_search
 from partition import *
+from partition import _find_split_axis, _split_on_axis
 from bound import *
 from energy import *
 from geometry import spherical_to_cart
@@ -60,6 +61,62 @@ def _center_config(cell):
         )
 
     return config
+
+
+def _cell_max_side_length(cell):
+
+    max_side = 0.0
+
+    for particle_range in cell.particle_ranges:
+        for dim, bounds in enumerate(particle_range.bounds):
+            if particle_range.fixed[dim]:
+                continue
+
+            side = bounds.hi - bounds.lo
+            if side > max_side:
+                max_side = side
+
+    return max_side
+
+
+def _build_even_mesh(root, side_length=0.1, cell_filter=None):
+
+    if side_length <= 0:
+        return [root]
+
+    ready = []
+    frontier = [root]
+    tolerance = 1e-15
+
+    while frontier:
+        cell = frontier.pop()
+
+        if cell_filter is not None and not cell_filter(cell):
+            continue
+
+        split_axis = _find_split_axis(cell)
+
+        if split_axis is None:
+            ready.append(cell)
+            continue
+
+        axis_i, axis_j = split_axis
+        axis_bounds = cell.particle_ranges[axis_i].bounds[axis_j]
+        axis_side = axis_bounds.hi - axis_bounds.lo
+
+        if axis_side <= side_length + tolerance:
+            ready.append(cell)
+            continue
+
+        children = _split_on_axis(cell, axis_i, axis_j)
+
+        if not children:
+            ready.append(cell)
+            continue
+
+        frontier.extend(children)
+
+    return ready
 
 
 def _respects_min_separation(config, d_min=None, alpha_min=None, epsilon=1e-15):
@@ -134,11 +191,12 @@ def search(
     show_progress=True,
     progress_update_every=10000,
     parallel_child_bounds=False,
-    parallel_workers=None,
-    parallel_batch_size=64,
+    parallel_workers=mp.cpu_count(),
+    parallel_batch_size=32,
     visualize_final=True,
     d_min=None,
     alpha_min=None,
+    initial_mesh_side_length=0.1,
 ):
 
     root=initial_cell(n)
@@ -147,15 +205,6 @@ def search(
     queue=[]
     active_cells = []
     bounds = []
-
-    heapq.heappush(
-        queue,
-        (
-            energy_lower_bound(root),
-            next(tie_breaker),
-            root
-        )
-    )
 
     best=float("inf")
     best_config=None
@@ -194,6 +243,30 @@ def search(
         pool = mp.Pool(processes=parallel_workers)
 
     try:
+        initial_cells = _build_even_mesh(
+            root,
+            side_length=initial_mesh_side_length,
+            cell_filter=_ordered_theta_possible,
+        )
+
+        if parallel_child_bounds and len(initial_cells) > 1:
+            if pool is None:
+                initial_lbs = [energy_lower_bound(cell) for cell in initial_cells]
+            else:
+                initial_lbs = pool.map(energy_lower_bound, initial_cells)
+        else:
+            initial_lbs = [energy_lower_bound(cell) for cell in initial_cells]
+
+        for cell, lb_value in zip(initial_cells, initial_lbs):
+            heapq.heappush(
+                queue,
+                (
+                    lb_value,
+                    next(tie_breaker),
+                    cell,
+                )
+            )
+
         use_batched_parallel = parallel_child_bounds and parallel_batch_size > 1
 
         while queue:

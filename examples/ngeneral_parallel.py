@@ -15,7 +15,7 @@ E,x=search(
     show_progress=True,
     parallel_child_bounds=True,
     parallel_workers=workers,
-    parallel_batch_size= 2048,
+    parallel_batch_size=32,
 )
 
 print(E,"For n =6 should be 12.712062...")

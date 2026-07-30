@@ -4,6 +4,7 @@ import os
 import io
 import time
 import argparse
+import importlib
 import contextlib
 import statistics
 
@@ -11,12 +12,22 @@ import matplotlib
 
 matplotlib.use("Agg")
 
-sys.path.append(str(Path(__file__).resolve().parents[1]))
+ROOT = str(Path(__file__).resolve().parents[1])
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
-from search import search
+search = importlib.import_module("taylor_search").search
 
 
-def run_search_once(n, target_depth, parallel_enabled, workers, batch_size):
+def run_search_once(
+    n,
+    target_depth,
+    parallel_enabled,
+    workers,
+    batch_size,
+    iv_dps,
+    initial_mesh_side_length,
+):
     start = time.perf_counter()
     with contextlib.redirect_stdout(io.StringIO()):
         energy, config = search(
@@ -29,9 +40,12 @@ def run_search_once(n, target_depth, parallel_enabled, workers, batch_size):
             parallel_child_bounds=parallel_enabled,
             parallel_workers=workers,
             parallel_batch_size=batch_size,
+            iv_dps=iv_dps,
+            initial_mesh_side_length=initial_mesh_side_length,
         )
     elapsed = time.perf_counter() - start
-    return elapsed, energy, len(config)
+    point_count = len(config) if config is not None else 0
+    return elapsed, energy, point_count
 
 
 def summarize(label, times, energy):
@@ -58,9 +72,9 @@ def parse_batch_sizes(text):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Benchmark search parallel batch sizes")
-    parser.add_argument("--n", type=int, default=6, help="Number of particles")
-    parser.add_argument("--depth", type=int, default=12, help="Single search target depth")
+    parser = argparse.ArgumentParser(description="Benchmark taylor_search parallel batch sizes")
+    parser.add_argument("--n", type=int, default=5, help="Number of particles")
+    parser.add_argument("--depth", type=int, default=2, help="Single search target depth")
     parser.add_argument(
         "--depths",
         type=str,
@@ -80,14 +94,19 @@ def main():
         default="16,32,64,128,256,512,1024,2048",
         help="Comma-separated parallel_batch_size values",
     )
+    parser.add_argument("--iv-dps", type=int, default=40, help="mpmath interval precision")
+    parser.add_argument("--initial-mesh-side-length", type=float, default=2)
     args = parser.parse_args()
 
     batch_sizes = parse_batch_sizes(args.batch_sizes)
     depth_values = parse_batch_sizes(args.depths) if args.depths else [args.depth]
 
-    print("Benchmark settings")
+    print("Taylor Parallel Batch Benchmark")
     print(f"  n={args.n}, depths={depth_values}, repeats={args.repeats}, workers={args.workers}")
     print(f"  batch_sizes={batch_sizes}")
+    print(
+        f"  iv_dps={args.iv_dps}, initial_mesh_side_length={args.initial_mesh_side_length}"
+    )
     print()
 
     for depth in depth_values:
@@ -101,10 +120,13 @@ def main():
                 depth,
                 parallel_enabled=False,
                 workers=None,
-                batch_size=64,
+                batch_size=32,
+                iv_dps=args.iv_dps,
+                initial_mesh_side_length=args.initial_mesh_side_length,
             )
             serial_times.append(elapsed)
             serial_energy = energy
+            print(f"  Serial run: elapsed={elapsed:.4f}s, energy={energy:.12f}")
 
         summarize("serial", serial_times, serial_energy)
 
@@ -118,9 +140,12 @@ def main():
                     parallel_enabled=True,
                     workers=args.workers,
                     batch_size=batch_size,
+                    iv_dps=args.iv_dps,
+                    initial_mesh_side_length=args.initial_mesh_side_length,
                 )
                 parallel_times.append(elapsed)
                 parallel_energy = energy
+                print(f"  Parallel run (b={batch_size}): elapsed={elapsed:.4f}s, energy={energy:.12f}")
 
             summarize(f"parallel b={batch_size}", parallel_times, parallel_energy)
 
