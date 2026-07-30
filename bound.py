@@ -49,6 +49,129 @@ def _max_pair_distance(c1, c2):
 
     return maxd
 
+
+@njit(cache=True)
+def _min_sep_pair_possible_kernel(
+    c1,
+    c2,
+    use_dist,
+    dist_threshold_sq,
+    use_angle,
+    cos_threshold,
+):
+    max_dist_sq = 0.0
+    min_dot = 1e300
+
+    for i in range(c1.shape[0]):
+        for j in range(c2.shape[0]):
+            dx = c1[i, 0] - c2[j, 0]
+            dy = c1[i, 1] - c2[j, 1]
+            dz = c1[i, 2] - c2[j, 2]
+            dist_sq = dx * dx + dy * dy + dz * dz
+
+            if dist_sq > max_dist_sq:
+                max_dist_sq = dist_sq
+
+            if use_angle:
+                dot = c1[i, 0] * c2[j, 0] + c1[i, 1] * c2[j, 1] + c1[i, 2] * c2[j, 2]
+                if dot < min_dot:
+                    min_dot = dot
+
+    if use_dist and max_dist_sq < dist_threshold_sq:
+        return False
+
+    if use_angle and min_dot > cos_threshold:
+        return False
+
+    for i in range(c1.shape[0]):
+        for j in range(c2.shape[0]):
+            dx = c1[i, 0] - c2[j, 0]
+            dy = c1[i, 1] - c2[j, 1]
+            dz = c1[i, 2] - c2[j, 2]
+            dist_sq = dx * dx + dy * dy + dz * dz
+
+            if use_dist and dist_sq < dist_threshold_sq:
+                continue
+
+            if use_angle:
+                dot = c1[i, 0] * c2[j, 0] + c1[i, 1] * c2[j, 1] + c1[i, 2] * c2[j, 2]
+                if dot > cos_threshold:
+                    continue
+
+            return True
+
+    return False
+
+
+@lru_cache(maxsize=500000)
+def _min_separation_pair_possible_cached(
+    theta1_lo,
+    theta1_hi,
+    phi1_lo,
+    phi1_hi,
+    theta2_lo,
+    theta2_hi,
+    phi2_lo,
+    phi2_hi,
+    use_dist,
+    dist_threshold_sq,
+    use_angle,
+    cos_threshold,
+):
+    c1 = _corner_points_cached(theta1_lo, theta1_hi, phi1_lo, phi1_hi)
+    c2 = _corner_points_cached(theta2_lo, theta2_hi, phi2_lo, phi2_hi)
+
+    return bool(
+        _min_sep_pair_possible_kernel(
+            c1,
+            c2,
+            use_dist,
+            dist_threshold_sq,
+            use_angle,
+            cos_threshold,
+        )
+    )
+
+
+def min_separation_pair_possible(
+    box1,
+    box2,
+    d_min_sq=None,
+    cos_alpha_min=None,
+    epsilon=1e-15,
+):
+    use_dist = d_min_sq is not None
+    use_angle = cos_alpha_min is not None
+
+    if not use_dist and not use_angle:
+        return True
+
+    eps = float(epsilon)
+    eps_sq = eps * eps
+    dist_threshold_sq = 0.0
+
+    if use_dist:
+        dist_threshold_sq = max(0.0, float(d_min_sq) - eps_sq)
+
+    cos_threshold = 0.0
+    if use_angle:
+        cos_threshold = float(cos_alpha_min) + eps
+
+    return _min_separation_pair_possible_cached(
+        float(box1[0].lo),
+        float(box1[0].hi),
+        float(box1[1].lo),
+        float(box1[1].hi),
+        float(box2[0].lo),
+        float(box2[0].hi),
+        float(box2[1].lo),
+        float(box2[1].hi),
+        bool(use_dist),
+        float(dist_threshold_sq),
+        bool(use_angle),
+        float(cos_threshold),
+    )
+
 def corner_points(box):
 
     theta_lo = box[0].lo

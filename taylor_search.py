@@ -24,6 +24,7 @@ from partition import split_with_index
 from energy import thompson_energy
 from search import (
     _center_config,
+    _min_separation_cell_possible,
     _ordered_theta_center,
     _ordered_theta_possible,
     _respects_min_separation,
@@ -455,6 +456,8 @@ def search(
     best_config = None
 
     use_min_separation = (d_min is not None) or (alpha_min is not None)
+    min_sep_cos_alpha = float(np.cos(alpha_min)) if alpha_min is not None else None
+    min_sep_d_sq = float(d_min) * float(d_min) if d_min is not None else None
 
     processed_nodes = 0
     estimated_total_nodes = ((2 ** (target_depth + 1)) - 1) / math.factorial(n - 2)
@@ -511,17 +514,41 @@ def search(
                     if not _ordered_theta_possible(cell):
                         continue
 
-                    config = _center_config(cell)
-
                     if use_min_separation:
-                        if not _respects_min_separation(
-                            config,
+                        if not _min_separation_cell_possible(
+                            cell,
                             d_min=d_min,
                             alpha_min=alpha_min,
+                            cos_alpha_min=min_sep_cos_alpha,
+                            d_min_sq=min_sep_d_sq,
                         ):
                             continue
 
-                    exact_energy = thompson_energy(config)
+                    config = _center_config(cell)
+
+                    refreshed_lb = _cascading_taylor_lower_bound(
+                        cell,
+                        model,
+                        best_energy=best,
+                    )
+
+                    # If any cascade stage proves lb >= best, this cell is
+                    # rigorously pruned and must not be split.
+                    if refreshed_lb is None:
+                        continue
+
+                    center_feasible = True
+                    if use_min_separation:
+                        center_feasible = _respects_min_separation(
+                            config,
+                            d_min=d_min,
+                            alpha_min=alpha_min,
+                        )
+
+                    if center_feasible:
+                        exact_energy = thompson_energy(config)
+                    else:
+                        exact_energy = float("inf")
 
                     if exact_energy < best:
                         if not _ordered_theta_center(config):
@@ -573,17 +600,41 @@ def search(
                 if not _ordered_theta_possible(cell):
                     continue
 
-                config = _center_config(cell)
-
                 if use_min_separation:
-                    if not _respects_min_separation(
-                        config,
+                    if not _min_separation_cell_possible(
+                        cell,
                         d_min=d_min,
                         alpha_min=alpha_min,
+                        cos_alpha_min=min_sep_cos_alpha,
+                        d_min_sq=min_sep_d_sq,
                     ):
                         continue
 
-                exact_energy = thompson_energy(config)
+                config = _center_config(cell)
+
+                refreshed_lb = _cascading_taylor_lower_bound(
+                    cell,
+                    model,
+                    best_energy=best,
+                )
+
+                # If any cascade stage proves lb >= best, this cell is
+                # rigorously pruned and must not be split.
+                if refreshed_lb is None:
+                    continue
+
+                center_feasible = True
+                if use_min_separation:
+                    center_feasible = _respects_min_separation(
+                        config,
+                        d_min=d_min,
+                        alpha_min=alpha_min,
+                    )
+
+                if center_feasible:
+                    exact_energy = thompson_energy(config)
+                else:
+                    exact_energy = float("inf")
 
                 if exact_energy < best:
                     if not _ordered_theta_center(config):

@@ -89,6 +89,42 @@ def _respects_min_separation(config, d_min=None, alpha_min=None, epsilon=1e-15):
     return True
 
 
+def _min_separation_cell_possible(
+    cell,
+    d_min=None,
+    alpha_min=None,
+    epsilon=1e-15,
+    cos_alpha_min=None,
+    d_min_sq=None,
+):
+
+    if d_min is None and alpha_min is None:
+        return True
+
+    if cos_alpha_min is None and alpha_min is not None:
+        cos_alpha_min = float(np.cos(alpha_min))
+
+    if d_min_sq is None and d_min is not None:
+        d_min_sq = float(d_min) * float(d_min)
+
+    bounds = [particle_range.bounds for particle_range in cell.particle_ranges]
+
+    for i in range(len(bounds)):
+        b1 = bounds[i]
+        for j in range(i + 1, len(bounds)):
+            b2 = bounds[j]
+            if not min_separation_pair_possible(
+                b1,
+                b2,
+                d_min_sq=d_min_sq,
+                cos_alpha_min=cos_alpha_min,
+                epsilon=epsilon,
+            ):
+                return False
+
+    return True
+
+
 def search(
     n,
     target_depth=12,
@@ -125,6 +161,8 @@ def search(
     best_config=None
 
     use_min_separation = (d_min is not None) or (alpha_min is not None)
+    min_sep_cos_alpha = float(np.cos(alpha_min)) if alpha_min is not None else None
+    min_sep_d_sq = float(d_min) * float(d_min) if d_min is not None else None
 
     processed_nodes = 0
     #Naive 2^depth and then discard n! that don't obey symetry arguments
@@ -185,17 +223,30 @@ def search(
                     if not _ordered_theta_possible(cell):
                         continue
 
-                    config=_center_config(cell)
-
                     if use_min_separation:
-                        if not _respects_min_separation(
-                            config,
+                        if not _min_separation_cell_possible(
+                            cell,
                             d_min=d_min,
                             alpha_min=alpha_min,
+                            cos_alpha_min=min_sep_cos_alpha,
+                            d_min_sq=min_sep_d_sq,
                         ):
                             continue
 
-                    E=thompson_energy(config)
+                    config=_center_config(cell)
+
+                    center_feasible = True
+                    if use_min_separation:
+                        center_feasible = _respects_min_separation(
+                            config,
+                            d_min=d_min,
+                            alpha_min=alpha_min,
+                        )
+
+                    if not center_feasible:
+                        E = float("inf")
+                    else:
+                        E=thompson_energy(config)
 
                     if E<best:
 
@@ -263,20 +314,31 @@ def search(
                     continue
 
 
-                # test center point
-
-                config=_center_config(cell)
-
                 if use_min_separation:
-                    if not _respects_min_separation(
-                        config,
+                    if not _min_separation_cell_possible(
+                        cell,
                         d_min=d_min,
                         alpha_min=alpha_min,
+                        cos_alpha_min=min_sep_cos_alpha,
+                        d_min_sq=min_sep_d_sq,
                     ):
                         continue
 
+                # test center point
+                config=_center_config(cell)
 
-                E=thompson_energy(config)
+                center_feasible = True
+                if use_min_separation:
+                    center_feasible = _respects_min_separation(
+                        config,
+                        d_min=d_min,
+                        alpha_min=alpha_min,
+                    )
+
+                if not center_feasible:
+                    E = float("inf")
+                else:
+                    E=thompson_energy(config)
 
 
                 if E<best:
