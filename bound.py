@@ -83,24 +83,7 @@ def _min_sep_pair_possible_kernel(
     if use_angle and min_dot > cos_threshold:
         return False
 
-    for i in range(c1.shape[0]):
-        for j in range(c2.shape[0]):
-            dx = c1[i, 0] - c2[j, 0]
-            dy = c1[i, 1] - c2[j, 1]
-            dz = c1[i, 2] - c2[j, 2]
-            dist_sq = dx * dx + dy * dy + dz * dz
-
-            if use_dist and dist_sq < dist_threshold_sq:
-                continue
-
-            if use_angle:
-                dot = c1[i, 0] * c2[j, 0] + c1[i, 1] * c2[j, 1] + c1[i, 2] * c2[j, 2]
-                if dot > cos_threshold:
-                    continue
-
-            return True
-
-    return False
+    return True
 
 
 @lru_cache(maxsize=500000)
