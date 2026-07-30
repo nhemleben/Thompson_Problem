@@ -332,7 +332,11 @@ def _taylor_enclosure(cell, model: TaylorModel):
     return result
 
 
-def _cascading_taylor_lower_bound(cell, model: TaylorModel, best_energy: float | None = None):
+def _cascading_taylor_lower_bound(
+    cell,
+    model: TaylorModel,
+    best_energy: float | None = None,
+):
     center, radius, intervals = _flat_center_and_radius(cell)
     config = _center_config(cell)
     center_energy = thompson_energy(config)
@@ -353,7 +357,7 @@ def _cascading_taylor_lower_bound(cell, model: TaylorModel, best_energy: float |
     lipschitz_lb = center_energy - grad_l1 * metric_radius
 
     if best_energy is not None and lipschitz_lb >= best_energy:
-        return None
+        return None, center_energy
 
     dq = [_iv_interval(-r, r) for r in radius]
     e0: Any = _iv_interval(center_energy, center_energy)
@@ -367,7 +371,7 @@ def _cascading_taylor_lower_bound(cell, model: TaylorModel, best_energy: float |
     linear_lb = float(linear_interval.a)
 
     if best_energy is not None and linear_lb >= best_energy:
-        return None
+        return None, center_energy
 
     # 3) Expensive: quadratic Taylor bound
     hessian = model.hessian(intervals)
@@ -381,7 +385,7 @@ def _cascading_taylor_lower_bound(cell, model: TaylorModel, best_energy: float |
     quadratic_lb = float(quadratic_interval.a)
 
     if best_energy is not None and quadratic_lb >= best_energy:
-        return None
+        return None, center_energy
 
     # 4) Very expensive: cubic remainder bound
     if model.third_derivative_usable:
@@ -399,11 +403,11 @@ def _cascading_taylor_lower_bound(cell, model: TaylorModel, best_energy: float |
     remainder: Any = _iv_interval(-remainder_radius, remainder_radius)
 
     cubic_interval: Any = quadratic_interval + remainder
-    return float(cubic_interval.a)
+    return float(cubic_interval.a), center_energy
 
 
 def _taylor_lower_bound(cell, model: TaylorModel) -> float:
-    lower_bound = _cascading_taylor_lower_bound(cell, model, best_energy=None)
+    lower_bound, _ = _cascading_taylor_lower_bound(cell, model, best_energy=None)
     if lower_bound is None:
         return float("inf")
     return lower_bound
@@ -413,7 +417,8 @@ def _child_taylor_lb_task(args):
     n, child, iv_dps, best_energy = args
     _set_iv_dps(iv_dps)
     model = build_taylor_model(n)
-    return _cascading_taylor_lower_bound(child, model, best_energy=best_energy)
+    lower_bound, _ = _cascading_taylor_lower_bound(child, model, best_energy=best_energy)
+    return lower_bound
 
 
 def _evaluate_child_lb_tasks(tasks, pool=None):
@@ -559,7 +564,7 @@ def search(
 
                     config = _center_config(cell)
 
-                    refreshed_lb = _cascading_taylor_lower_bound(
+                    refreshed_lb, center_energy = _cascading_taylor_lower_bound(
                         cell,
                         model,
                         best_energy=best,
@@ -579,7 +584,7 @@ def search(
                         )
 
                     if center_feasible:
-                        exact_energy = thompson_energy(config)
+                        exact_energy = center_energy
                     else:
                         exact_energy = float("inf")
 
@@ -677,7 +682,7 @@ def search(
 
                 config = _center_config(cell)
 
-                refreshed_lb = _cascading_taylor_lower_bound(
+                refreshed_lb, center_energy = _cascading_taylor_lower_bound(
                     cell,
                     model,
                     best_energy=best,
@@ -697,7 +702,7 @@ def search(
                     )
 
                 if center_feasible:
-                    exact_energy = thompson_energy(config)
+                    exact_energy = center_energy
                 else:
                     exact_energy = float("inf")
 
