@@ -6,11 +6,15 @@ from intvalpy import Interval
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from LDL_interval import interval_ldlt
+from LDL_interval import interval_ldlt, validate_interval_ldlt_result
 
 
 def is_verified_pd(A):
     return interval_ldlt(A) is not None
+
+
+def is_valid_factorization(A):
+    return validate_interval_ldlt_result(A, interval_ldlt(A))[0]
 
 
 ###########################################################
@@ -25,6 +29,7 @@ def test_identity():
     ]
 
     assert is_verified_pd(A)
+    assert is_valid_factorization(A)
 
 
 ###########################################################
@@ -39,6 +44,7 @@ def test_small_spd():
     ]
 
     assert is_verified_pd(A)
+    assert is_valid_factorization(A)
 
 
 ###########################################################
@@ -53,6 +59,7 @@ def test_interval_spd():
     ]
 
     assert is_verified_pd(A)
+    assert is_valid_factorization(A)
 
 
 ###########################################################
@@ -100,6 +107,19 @@ def test_crossing_zero():
     #
 
     assert not is_verified_pd(A)
+
+
+def test_validation_fails_for_none_result():
+
+    A = [
+        [Interval(1,1), Interval(2,2)],
+        [Interval(2,2), Interval(1,1)]
+    ]
+
+    ok, errors = validate_interval_ldlt_result(A, interval_ldlt(A))
+
+    assert not ok
+    assert errors
 
 
 ###########################################################

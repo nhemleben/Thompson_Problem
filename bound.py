@@ -28,7 +28,7 @@ def _load_njit():
 njit, NUMBA_ENABLED = _load_njit()
 
 if not getattr(builtins, "_THOMPSON_NUMBA_STARTUP_PRINTED", False):
-    status = "enabled" if NUMBA_ENABLED else "disabled"
+    status = "active" if NUMBA_ENABLED else "disabled"
     print(f"[startup] Numba JIT: {status}")
     setattr(builtins, "_THOMPSON_NUMBA_STARTUP_PRINTED", True)
 
