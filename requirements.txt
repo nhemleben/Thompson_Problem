@@ -1,0 +1,7 @@
+numpy
+matplotlib
+mpmath
+sympy
+intvalpy
+numba
+pytest
