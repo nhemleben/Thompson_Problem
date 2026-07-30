@@ -46,3 +46,164 @@ Most immediate wins for you:
 2) reduce printing/progress frequency,
 3) incremental lower-bound updates from parent to child.  
 Those three alone should make a major difference.
+
+
+
+
+
+
+
+
+
+On taylor search speed ups:
+Stop rebuilding symbolic derivatives every process run
+Hotspot: taylor_search.py:73.
+Why: Sympy diff and expression factoring are expensive startup cost.
+Speedup: large startup win.
+How: serialize generated lambdas or generated source to disk keyed by n, and reload if present.
+Do not attempt third-derivative symbolic interval eval on every node if it already failed once
+Hotspot path: taylor_search.py:230-236.
+Why: raising/catching exceptions repeatedly is expensive.
+Speedup: medium to large if fallback is frequently used.
+How: set a model flag after first failure and go directly to taylor_search.py:196.
+Avoid duplicate center computations and exact energy work
+Duplication: taylor_search.py:208 and again in taylor_search.py:301.
+Why: repeated conversion and energy evaluation per node.
+Speedup: medium.
+How: compute center config once in search loop and pass it into bound computation.
+Replace nested quadratic loops with matrix form when safe
+Current loop: taylor_search.py:220-224.
+Why: Python loop overhead is nontrivial per node.
+Speedup: medium.
+How: use interval-aware dot/matmul or pre-structured block operations.
+Cache fallback pair geometry for sibling cells
+Hotspot path: taylor_search.py:196 calling taylor_search.py:179.
+Why: many repeated pair-bound calculations across nearby cells.
+Speedup: medium.
+How: cache by rounded interval endpoints or by parent-child incremental update pattern.
+Add parallel child-bound evaluation (same pattern as main search)
+Current: serial child lower bounds in taylor_search.py:324-329.
+Why: each child bound is independent and heavy.
+Speedup: high on multi-core for deeper runs.
+How: add optional multiprocessing batch mode similar to search.py:96.
+Tune interval precision for search mode
+Setting: taylor_search.py:28.
+Why: higher precision greatly increases interval trig cost.
+Speedup: potentially large.
+How: expose precision as argument and benchmark 30/40/50.
+If you want, I can implement the first two now (persistent model cache + one-time third-derivative failure latch). Those are usually the fastest wins with minimal algorithmic risk.
+
+
+
+
+About d_min method
+Highest-impact speedups for your current min-separation path are in search.py, specifically inside _min_separation_cell_possible.
+
+Replace matrix/broadcast work with tiny fused loops
+Current code builds dists, dots, dist_mask, angle_mask for each pair of particles.
+For 4x4 corners, allocation overhead dominates arithmetic.
+Use nested loops over 16 corner pairs and early-return as soon as one feasible corner pair is found.
+Also compare squared distance against 
+𝑑
+min
+⁡
+2
+d 
+min
+2
+​
+  to avoid sqrt.
+Add cheap pairwise impossibility prechecks before full corner scan
+You already have corner utilities in bound.py.
+Add fast scalar tests per particle-pair:
+If max_possible_distance < d_min, prune immediately.
+If min_possible_dot > cos(alpha_min), prune immediately.
+This lets many cells die before any full logical checks.
+Precompute and reuse thresholds once per search
+Compute cos(alpha_min) and d_min^2 once in search setup, not per cell.
+Pass those constants down to the checker to reduce repeated trig/sqrt work.
+Cache pair-feasibility results by box endpoints
+Splits generate repeated sub-box combinations.
+Add LRU caching for pair checks keyed by (theta_lo, theta_hi, phi_lo, phi_hi) for both particles plus thresholds.
+You already do this pattern for corner_points in bound.py; extending it to pair feasibility usually helps a lot.
+JIT the min-separation core
+Move the fused pair-check to a numba-njit function in bound.py, where numba is already conditionally enabled.
+Keep Python orchestration, but run hot inner loops in compiled code.
+Avoid duplicate feasibility effort in Taylor path
+In taylor_search.py, min-separation is checked before expensive Taylor cascade (good).
+Next step: carry the feasibility result through child processing so you do not recompute equivalent checks in nearby code paths.
+Benchmark with counters, not just wall time
+Extend benchmark_taylor_min_separation.py to report:
+number of min-sep calls
+number pruned by cheap precheck
+number requiring full corner scan
+This will show exactly where time is going and confirm each optimization.
+
+
+
+
+Good question. You already optimized some big pieces, so now the highest wins are concentrated in a few hotspots.
+
+Most likely bottlenecks to target next:
+
+Symbolic model construction and lambdify startup
+Hotspot: taylor_search.py:161
+Why: first-run cost can dominate total runtime (SymPy expression load/lambdify + worker warm-up).
+Speedups:
+Pre-generate all needed symbolic payloads before runs (you already have generators; keep using them).
+
+In multiprocessing mode, initialize one model per worker once (pool initializer), instead of calling taylor_search.py:412 and relying on per-task lazy cache checks.
+
+Keep worker count fixed across sweeps so warm workers are reused.
+
+Duplicate center energy evaluations per node
+
+Hotspots:
+taylor_search.py:335 computes center energy at taylor_search.py:338.
+Main search loop computes exact center again at taylor_search.py:582 and taylor_search.py:700.
+Why: same thompson_energy(center) can be computed twice per visited cell.
+Speedup:
+Return center energy (or center config + energy) from cascading bound and reuse it for best-update checks.
+
+Expensive interval Hessian / cubic stages in cascade
+
+Hotspots: taylor_search.py:335, especially the later stages.
+Why: most math cost is in interval trig and Hessian/cubic remainder.
+Speedups:
+Make early-stage pruning more aggressive so fewer cells reach quadratic/cubic.
+
+Add a “stage hit-rate” counter to see how often each stage is reached and where pruning actually happens.
+
+Consider lower iv_dps for early iterations, then re-run survivors at higher precision.
+
+Child bound task overhead in parallel path
+
+Hotspots: taylor_search.py:419, taylor_search.py:412
+Why: many small task dispatches and per-task setup overhead.
+Speedups:
+Use larger chunksize in pool map.
+
+Keep batch sizes around your plateau optimum (your benchmark suggests ~32 is good).
+
+Move invariant setup (iv_dps/model lookup) out of per-task function via worker globals.
+
+Initial mesh and startup queue seeding
+
+Hotspot: search.py:82, plus initial bounds in taylor_search.py:429
+Why: if initial mesh is too fine, startup can dwarf everything else.
+Speedups:
+Add max pre-mesh cells or max pre-mesh depth cap.
+
+Keep taylor_search.py:442 coarse for benchmarks.
+
+Use adaptive side length by n (coarser for larger n).
+
+Min-separation checks (now improved, but still tunable)
+
+Hotspots: search.py:192, search.py:232
+Why: still nontrivial at scale.
+Speedups:
+Keep parent->child state reuse (you added this, good).
+Add counters for cache hit/miss and recompute counts to verify real savings.
+Consider compressing pair-state storage (bitset/int mask) to reduce Python dict overhead.
+If you want, I can implement the single highest-impact low-risk change next: remove duplicate center-energy evaluation by plumbing center energy out of taylor_search.py:335 into the main loop.

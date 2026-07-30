@@ -14,8 +14,9 @@ search = importlib.import_module("taylor_search").search
 def main():
     parser = argparse.ArgumentParser(description="Run the rigorous Taylor-search Thomson solver")
     parser.add_argument("--n", type=int, default=3, help="Number of particles")
-    parser.add_argument("--target-depth", type=int, default=2, help="Search tree depth")
-    parser.add_argument("--iv-dps", type=int, default=50, help="mpmath interval precision")
+    parser.add_argument("--target-depth", type=int, default=10, help="Search tree depth")
+    parser.add_argument("--iv-dps", type=int, default=30, help="mpmath interval precision")
+
     parallel_group = parser.add_mutually_exclusive_group()
     parallel_group.add_argument(
         "--parallel-child-bounds",
@@ -61,6 +62,7 @@ def main():
         parallel_batch_size=args.parallel_batch_size,
         initial_mesh_side_length=args.initial_mesh_side_length,
         show_progress=not args.no_show_progress,
+        measure_termination_volumes=True,
     )
 
     print(energy, f"Taylor-search result for n={args.n}")

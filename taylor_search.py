@@ -41,6 +41,12 @@ _WORKER_MODEL: TaylorModel | None = None
 _WORKER_N: int | None = None
 _WORKER_IV_DPS: int | None = None
 _REUSABLE_POOLS: dict[tuple[int, int, int], Any] = {}
+_CASCADE_EXIT_LABELS = {
+    1: "lipschitz_prune",
+    2: "linear_prune",
+    3: "quadratic_prune",
+    4: "cubic_exit",
+}
 
 
 def _set_iv_dps(iv_dps: int) -> int:
@@ -247,6 +253,52 @@ def _spherical_metric_radius(cell) -> float:
     return math.sqrt(total)
 
 
+def _cell_parameter_volume(cell) -> float:
+    volume = 1.0
+    free_dims = 0
+
+    for particle_range in cell.particle_ranges:
+        for dim, bounds in enumerate(particle_range.bounds):
+            if particle_range.fixed[dim]:
+                continue
+
+            width = max(0.0, float(bounds.hi - bounds.lo))
+            volume *= width
+            free_dims += 1
+
+    if free_dims == 0:
+        return 1.0
+
+    return volume
+
+
+def _init_termination_tracker() -> dict[str, dict[int, float] | dict[int, int]]:
+    return {
+        "counts": {1: 0, 2: 0, 3: 0, 4: 0},
+        "volumes": {1: 0.0, 2: 0.0, 3: 0.0, 4: 0.0},
+    }
+
+
+def _record_termination_exit(tracker, stage: int, cell) -> None:
+    if tracker is None:
+        return
+
+    counts = tracker["counts"]
+    volumes = tracker["volumes"]
+    counts[stage] = counts[stage] + 1
+    volumes[stage] = volumes[stage] + _cell_parameter_volume(cell)
+
+
+def _record_termination_observation(tracker, stage: int | None, volume: float) -> None:
+    if tracker is None or stage is None:
+        return
+
+    counts = tracker["counts"]
+    volumes = tracker["volumes"]
+    counts[stage] = counts[stage] + 1
+    volumes[stage] = volumes[stage] + float(volume)
+
+
 def _tensor_frobenius_norm_bound(tensor) -> Any:
     array = np.asarray(tensor, dtype=object)
     total = mp.iv.mpf(0)
@@ -340,6 +392,7 @@ def _cascading_taylor_lower_bound(
     cell,
     model: TaylorModel,
     best_energy: float | None = None,
+    termination_tracker=None,
 ):
     center, radius, intervals = _flat_center_and_radius(cell)
     config = _center_config(cell)
@@ -361,7 +414,8 @@ def _cascading_taylor_lower_bound(
     lipschitz_lb = center_energy - grad_l1 * metric_radius
 
     if best_energy is not None and lipschitz_lb >= best_energy:
-        return None, center_energy
+        _record_termination_exit(termination_tracker, 1, cell)
+        return None, center_energy, 1
 
     dq = [_iv_interval(-r, r) for r in radius]
     e0: Any = _iv_interval(center_energy, center_energy)
@@ -375,7 +429,8 @@ def _cascading_taylor_lower_bound(
     linear_lb = float(linear_interval.a)
 
     if best_energy is not None and linear_lb >= best_energy:
-        return None, center_energy
+        _record_termination_exit(termination_tracker, 2, cell)
+        return None, center_energy, 2
 
     # 3) Expensive: quadratic Taylor bound
     hessian = model.hessian(intervals)
@@ -389,7 +444,8 @@ def _cascading_taylor_lower_bound(
     quadratic_lb = float(quadratic_interval.a)
 
     if best_energy is not None and quadratic_lb >= best_energy:
-        return None, center_energy
+        _record_termination_exit(termination_tracker, 3, cell)
+        return None, center_energy, 3
 
     # 4) Very expensive: cubic remainder bound
     if model.third_derivative_usable:
@@ -407,11 +463,12 @@ def _cascading_taylor_lower_bound(
     remainder: Any = _iv_interval(-remainder_radius, remainder_radius)
 
     cubic_interval: Any = quadratic_interval + remainder
-    return float(cubic_interval.a), center_energy
+    _record_termination_exit(termination_tracker, 4, cell)
+    return float(cubic_interval.a), center_energy, 4
 
 
 def _taylor_lower_bound(cell, model: TaylorModel) -> float:
-    lower_bound, _ = _cascading_taylor_lower_bound(cell, model, best_energy=None)
+    lower_bound, _, _ = _cascading_taylor_lower_bound(cell, model, best_energy=None)
     if lower_bound is None:
         return float("inf")
     return lower_bound
@@ -457,13 +514,18 @@ def _child_taylor_lb_task(args):
         if model is None:
             raise RuntimeError("Worker model not initialized; pool initializer was not run")
 
-        return _cascading_taylor_lower_bound(child, model, best_energy=best_energy)[0]
+        lower_bound, _, stage = _cascading_taylor_lower_bound(
+            child,
+            model,
+            best_energy=best_energy,
+        )
+        return lower_bound, stage, _cell_parameter_volume(child)
 
     n, child, iv_dps, best_energy = args
     _set_iv_dps(iv_dps)
     model = build_taylor_model(n)
-    lower_bound, _ = _cascading_taylor_lower_bound(child, model, best_energy=best_energy)
-    return lower_bound
+    lower_bound, _, stage = _cascading_taylor_lower_bound(child, model, best_energy=best_energy)
+    return lower_bound, stage, _cell_parameter_volume(child)
 
 
 def _evaluate_child_lb_tasks(tasks, pool=None):
@@ -493,6 +555,7 @@ def search(
     alpha_min=None,
     initial_mesh_side_length=0.1,
     reuse_worker_pool=True,
+    measure_termination_volumes=False,
 ):
     iv_dps = _set_iv_dps(iv_dps)
     model = build_taylor_model(n)
@@ -509,6 +572,7 @@ def search(
     use_min_separation = (d_min is not None) or (alpha_min is not None)
     min_sep_cos_alpha = float(np.cos(alpha_min)) if alpha_min is not None else None
     min_sep_d_sq = float(d_min) * float(d_min) if d_min is not None else None
+    termination_tracker = _init_termination_tracker() if measure_termination_volumes else None
 
     processed_nodes = 0
     estimated_total_nodes = ((2 ** (target_depth + 1)) - 1) / math.factorial(n - 2)
@@ -562,9 +626,29 @@ def search(
                 (cell, float("inf"))
                 for cell in initial_cells
             ]
-            initial_lbs = _evaluate_child_lb_tasks(initial_tasks, pool=pool)
+            initial_results = _evaluate_child_lb_tasks(initial_tasks, pool=pool)
+            initial_lbs = []
+
+            for lb_value, stage, volume in initial_results:
+                _record_termination_observation(
+                    termination_tracker,
+                    stage,
+                    volume,
+                )
+                initial_lbs.append(lb_value)
         else:
-            initial_lbs = [_taylor_lower_bound(cell, model) for cell in initial_cells]
+            initial_lbs = []
+            for cell in initial_cells:
+                lb_value, _, _ = _cascading_taylor_lower_bound(
+                    cell,
+                    model,
+                    best_energy=None,
+                    termination_tracker=termination_tracker,
+                )
+                if lb_value is None:
+                    initial_lbs.append(float("inf"))
+                else:
+                    initial_lbs.append(lb_value)
 
         for cell, root_lb in zip(initial_cells, initial_lbs):
             if root_lb is not None:
@@ -622,10 +706,11 @@ def search(
 
                     config = _center_config(cell)
 
-                    refreshed_lb, center_energy = _cascading_taylor_lower_bound(
+                    refreshed_lb, center_energy, _ = _cascading_taylor_lower_bound(
                         cell,
                         model,
                         best_energy=best,
+                        termination_tracker=termination_tracker,
                     )
 
                     # If any cascade stage proves lb >= best, this cell is
@@ -709,7 +794,16 @@ def search(
                         )
 
                 if pending_tasks:
-                    child_lbs = _evaluate_child_lb_tasks(pending_tasks, pool=pool)
+                    child_results = _evaluate_child_lb_tasks(pending_tasks, pool=pool)
+
+                    child_lbs = []
+                    for child_lb, child_stage, child_volume in child_results:
+                        _record_termination_observation(
+                            termination_tracker,
+                            child_stage,
+                            child_volume,
+                        )
+                        child_lbs.append(child_lb)
 
                     for child, child_lb, child_state in zip(
                         pending_children,
@@ -750,10 +844,11 @@ def search(
 
                 config = _center_config(cell)
 
-                refreshed_lb, center_energy = _cascading_taylor_lower_bound(
+                refreshed_lb, center_energy, _ = _cascading_taylor_lower_bound(
                     cell,
                     model,
                     best_energy=best,
+                    termination_tracker=termination_tracker,
                 )
 
                 # If any cascade stage proves lb >= best, this cell is
@@ -827,7 +922,16 @@ def search(
                             (n, child, int(iv_dps), best)
                             for child in feasible_children
                         ]
-                    child_lbs = _evaluate_child_lb_tasks(child_tasks, pool=pool)
+                    child_results = _evaluate_child_lb_tasks(child_tasks, pool=pool)
+                    child_lbs = []
+
+                    for child_lb, child_stage, child_volume in child_results:
+                        _record_termination_observation(
+                            termination_tracker,
+                            child_stage,
+                            child_volume,
+                        )
+                        child_lbs.append(child_lb)
 
                     for child, child_lb, child_state in zip(feasible_children, child_lbs, feasible_states):
                         if child_lb is not None and child_lb < best:
@@ -849,6 +953,38 @@ def search(
         )
     else:
         print("Average time: n/a s/node over 0 nodes")
+
+    if measure_termination_volumes and termination_tracker is not None:
+        counts = termination_tracker["counts"]
+        volumes = termination_tracker["volumes"]
+        total_count = sum(counts.values())
+        total_volume = sum(volumes.values())
+
+        print("Termination Exit Tracker (_cascading_taylor_lower_bound)")
+        print(
+            f"  total_evaluated_cells={total_count}, "
+            f"total_evaluated_volume={total_volume:.12e}"
+        )
+
+        for stage in (1, 2, 3, 4):
+            stage_count = counts[stage]
+            stage_volume = volumes[stage]
+
+            if total_count > 0:
+                count_fraction = stage_count / total_count
+            else:
+                count_fraction = 0.0
+
+            if total_volume > 0.0:
+                volume_fraction = stage_volume / total_volume
+            else:
+                volume_fraction = 0.0
+
+            print(
+                f"  {_CASCADE_EXIT_LABELS[stage]:>16}: "
+                f"count={stage_count} ({count_fraction:.2%}), "
+                f"volume={stage_volume:.12e} ({volume_fraction:.2%})"
+            )
 
     if visualize_final and best_config is not None:
         visualize_final_minimum.plot_final_minimum(best_config, best)
@@ -894,6 +1030,7 @@ def main():
     parser.add_argument("--parallel-workers", type=int, default=mp_pool.cpu_count())
     parser.add_argument("--parallel-batch-size", type=int, default=32)
     parser.add_argument("--reuse-worker-pool", action="store_true")
+    parser.add_argument("--measure-termination-volumes", action="store_true")
     parser.add_argument("--iv-dps", type=int, default=50)
     parser.add_argument("--initial-mesh-side-length", type=float, default=0.1)
     parser.add_argument("--no-visualize-final", action="store_true")
@@ -911,6 +1048,7 @@ def main():
         parallel_workers=args.parallel_workers,
         parallel_batch_size=args.parallel_batch_size,
         reuse_worker_pool=args.reuse_worker_pool,
+        measure_termination_volumes=args.measure_termination_volumes,
         iv_dps=args.iv_dps,
         initial_mesh_side_length=args.initial_mesh_side_length,
         visualize_final=not args.no_visualize_final,
