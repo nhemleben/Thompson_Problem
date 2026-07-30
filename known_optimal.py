@@ -6,6 +6,7 @@ def T_n(n):
     Extend this dictionary as needed.
     """
     T = {
+        1: 0, #this is trivial, only one particle
         2: 0.5,
         3: 1.732050808,
         4: 3.674234614,
