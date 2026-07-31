@@ -33,6 +33,22 @@ def main():
     parser.add_argument("--parallel-workers", type=int, default=mp.cpu_count())
     parser.add_argument("--parallel-batch-size", type=int, default=32)
     parser.add_argument("--initial-mesh-side-length", type=float, default=0.1)
+    init_mode_group = parser.add_mutually_exclusive_group()
+    init_mode_group.add_argument(
+        "--antipodal",
+        dest="initial_cell_mode",
+        action="store_const",
+        const="antipodal",
+        help="Use antipodal initial-cell setup",
+    )
+    init_mode_group.add_argument(
+        "--non-antipodal",
+        dest="initial_cell_mode",
+        action="store_const",
+        const="non-antipodal",
+        help="Use non-antipodal initial-cell setup (default)",
+    )
+    parser.set_defaults(initial_cell_mode="non-antipodal")
     parser.add_argument(
         "--visualize-search",
         action="store_true",
@@ -60,6 +76,7 @@ def main():
         parallel_workers=args.parallel_workers,
         parallel_batch_size=args.parallel_batch_size,
         initial_mesh_side_length=args.initial_mesh_side_length,
+        initial_cell_mode=args.initial_cell_mode,
         show_progress=not args.no_show_progress,
     )
 

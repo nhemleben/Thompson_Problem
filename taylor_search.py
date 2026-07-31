@@ -554,12 +554,13 @@ def search(
     d_min=None,
     alpha_min=None,
     initial_mesh_side_length=0.1,
+    initial_cell_mode="non-antipodal",
     reuse_worker_pool=True,
     measure_termination_volumes=False,
 ):
     iv_dps = _set_iv_dps(iv_dps)
     model = build_taylor_model(n)
-    root = initial_cell(n)
+    root = initial_cell(n, mode=initial_cell_mode)
     tie_breaker = count()
 
     queue = []
@@ -1033,8 +1034,24 @@ def main():
     parser.add_argument("--measure-termination-volumes", action="store_true")
     parser.add_argument("--iv-dps", type=int, default=50)
     parser.add_argument("--initial-mesh-side-length", type=float, default=0.1)
+    init_mode_group = parser.add_mutually_exclusive_group()
+    init_mode_group.add_argument(
+        "--antipodal",
+        dest="initial_cell_mode",
+        action="store_const",
+        const="antipodal",
+        help="Use antipodal initial-cell setup",
+    )
+    init_mode_group.add_argument(
+        "--non-antipodal",
+        dest="initial_cell_mode",
+        action="store_const",
+        const="non-antipodal",
+        help="Use non-antipodal initial-cell setup (default)",
+    )
     parser.add_argument("--no-visualize-final", action="store_true")
     parser.add_argument("--no-show-progress", action="store_true")
+    parser.set_defaults(initial_cell_mode="non-antipodal")
     args = parser.parse_args()
 
     search(
@@ -1051,6 +1068,7 @@ def main():
         measure_termination_volumes=args.measure_termination_volumes,
         iv_dps=args.iv_dps,
         initial_mesh_side_length=args.initial_mesh_side_length,
+        initial_cell_mode=args.initial_cell_mode,
         visualize_final=not args.no_visualize_final,
     )
 
