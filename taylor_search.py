@@ -18,12 +18,12 @@ import mpmath as mp
 import numpy as np
 import sympy as sp  # type: ignore[import-untyped]
 
-from geometry import spherical_to_cart
 from inital_part import initial_cell
 from partition import split_with_index
 from energy import thompson_energy
 from search import (
     _build_even_mesh,
+    _cell_charts,
     _center_config,
     _min_separation_state_from_cell,
     _min_separation_state_from_parent,
@@ -40,7 +40,8 @@ _TAYLOR_CACHE_VERSION = 1
 _WORKER_MODEL: TaylorModel | None = None
 _WORKER_N: int | None = None
 _WORKER_IV_DPS: int | None = None
-_REUSABLE_POOLS: dict[tuple[int, int, int], Any] = {}
+_WORKER_INITIAL_CELL_MODE: str | None = None
+_REUSABLE_POOLS: dict[tuple[int, int, int, str], Any] = {}
 _CASCADE_EXIT_LABELS = {
     1: "lipschitz_prune",
     2: "linear_prune",
@@ -212,6 +213,103 @@ def build_taylor_model(n: int) -> TaylorModel:
     )
 
 
+def _normalized_chart(chart: str) -> str:
+    return str(chart).strip().lower()
+
+
+def _canonicalize_flat_values(values, charts: list[str]) -> list[Any]:
+    canonical = list(values)
+
+    for particle_index, chart in enumerate(charts):
+        if _normalized_chart(chart) != "antipodal_psi":
+            continue
+
+        phi_index = 2 * particle_index + 1
+        canonical[phi_index] = math.pi - canonical[phi_index]
+
+    return canonical
+
+
+def _chart_sign_vector(charts: list[str]) -> np.ndarray:
+    signs = np.ones(2 * len(charts), dtype=float)
+
+    for particle_index, chart in enumerate(charts):
+        if _normalized_chart(chart) == "antipodal_psi":
+            signs[2 * particle_index + 1] = -1.0
+
+    return signs
+
+
+def _transform_gradient_from_canonical(gradient, sign_vector: np.ndarray):
+    gradient_array = np.asarray(gradient, dtype=object).reshape(-1)
+    transformed = np.asarray(gradient_array, dtype=object).copy()
+
+    for index, sign in enumerate(sign_vector):
+        if sign < 0:
+            transformed[index] = -transformed[index]
+
+    return transformed
+
+
+def _transform_hessian_from_canonical(hessian, sign_vector: np.ndarray):
+    hessian_array = np.asarray(hessian, dtype=object)
+    transformed = np.asarray(hessian_array, dtype=object).copy()
+
+    for i in range(transformed.shape[0]):
+        for j in range(transformed.shape[1]):
+            if sign_vector[i] * sign_vector[j] < 0:
+                transformed[i, j] = -transformed[i, j]
+
+    return transformed
+
+
+def _transform_third_derivative_from_canonical(third, sign_vector: np.ndarray):
+    third_array = np.asarray(third, dtype=object)
+    transformed = np.asarray(third_array, dtype=object).copy()
+
+    for i in range(transformed.shape[0]):
+        for j in range(transformed.shape[1]):
+            for k in range(transformed.shape[2]):
+                if sign_vector[i] * sign_vector[j] * sign_vector[k] < 0:
+                    transformed[i, j, k] = -transformed[i, j, k]
+
+    return transformed
+
+
+def _wrap_model_for_charts(model: TaylorModel, charts: list[str]) -> TaylorModel:
+    if all(_normalized_chart(chart) == "standard" for chart in charts):
+        return model
+
+    sign_vector = _chart_sign_vector(charts)
+
+    def energy(values):
+        canonical_values = _canonicalize_flat_values(values, charts)
+        return model.energy(canonical_values)
+
+    def gradient(values):
+        canonical_values = _canonicalize_flat_values(values, charts)
+        canonical_gradient = model.gradient(canonical_values)
+        return _transform_gradient_from_canonical(canonical_gradient, sign_vector)
+
+    def hessian(values):
+        canonical_values = _canonicalize_flat_values(values, charts)
+        canonical_hessian = model.hessian(canonical_values)
+        return _transform_hessian_from_canonical(canonical_hessian, sign_vector)
+
+    def third_derivative(values):
+        canonical_values = _canonicalize_flat_values(values, charts)
+        canonical_third = model.third_derivative(canonical_values)
+        return _transform_third_derivative_from_canonical(canonical_third, sign_vector)
+
+    return TaylorModel(
+        energy=energy,
+        gradient=gradient,
+        hessian=hessian,
+        third_derivative=third_derivative,
+        third_derivative_usable=model.third_derivative_usable,
+    )
+
+
 def _flat_center_and_radius(cell):
     center: list[float] = []
     radius: list[float] = []
@@ -311,9 +409,17 @@ def _tensor_frobenius_norm_bound(tensor) -> Any:
     return mp.iv.sqrt(_iv_interval(lower, upper))
 
 
-def _interval_cartesian_point(theta_bounds, phi_bounds):
+def _interval_cartesian_point(theta_bounds, phi_bounds, chart="standard"):
     theta = _iv_interval(theta_bounds.lo, theta_bounds.hi)
     phi = _iv_interval(phi_bounds.lo, phi_bounds.hi)
+
+    if _normalized_chart(chart) == "antipodal_psi":
+        psi = phi
+        return (
+            mp.iv.sin(psi) * mp.iv.cos(theta),  # type: ignore[operator]
+            mp.iv.sin(psi) * mp.iv.sin(theta),  # type: ignore[operator]
+            -mp.iv.cos(psi),
+        )
 
     return (
         mp.iv.sin(phi) * mp.iv.cos(theta),  # type: ignore[operator]
@@ -322,9 +428,9 @@ def _interval_cartesian_point(theta_bounds, phi_bounds):
     )
 
 
-def _pair_distance_lower_bound(bounds_a, bounds_b) -> float:
-    x1, y1, z1 = _interval_cartesian_point(*bounds_a)
-    x2, y2, z2 = _interval_cartesian_point(*bounds_b)
+def _pair_distance_lower_bound(bounds_a, bounds_b, chart_a="standard", chart_b="standard") -> float:
+    x1, y1, z1 = _interval_cartesian_point(*bounds_a, chart=chart_a)
+    x2, y2, z2 = _interval_cartesian_point(*bounds_b, chart=chart_b)
 
     dx = x1 - x2
     dy = y1 - y2
@@ -337,10 +443,16 @@ def _pair_distance_lower_bound(bounds_a, bounds_b) -> float:
 def _fallback_third_derivative_bound(cell) -> float:
     pairwise_bound = 0.0
     bounds = [particle_range.bounds for particle_range in cell.particle_ranges]
+    charts = [getattr(particle_range, "chart", "standard") for particle_range in cell.particle_ranges]
 
     for i in range(len(bounds)):
         for j in range(i + 1, len(bounds)):
-            d_min = _pair_distance_lower_bound(bounds[i], bounds[j])
+            d_min = _pair_distance_lower_bound(
+                bounds[i],
+                bounds[j],
+                chart_a=charts[i],
+                chart_b=charts[j],
+            )
             if d_min <= 0.0:
                 return float("inf")
 
@@ -352,8 +464,10 @@ def _fallback_third_derivative_bound(cell) -> float:
 def _taylor_enclosure(cell, model: TaylorModel):
     center, radius, intervals = _flat_center_and_radius(cell)
     config = _center_config(cell)
+    charts = _cell_charts(cell)
 
-    qc_energy: Any = _iv_interval(thompson_energy(config), thompson_energy(config))
+    center_energy = thompson_energy(config, charts=charts)
+    qc_energy: Any = _iv_interval(center_energy, center_energy)
     gradient = model.gradient(center)
     hessian = model.hessian(intervals)
 
@@ -396,7 +510,8 @@ def _cascading_taylor_lower_bound(
 ):
     center, radius, intervals = _flat_center_and_radius(cell)
     config = _center_config(cell)
-    center_energy = thompson_energy(config)
+    charts = _cell_charts(cell)
+    center_energy = thompson_energy(config, charts=charts)
     metric_radius = _spherical_metric_radius(cell)
 
     # 1) Cheap: Lipschitz bound from center gradient norm
@@ -474,16 +589,20 @@ def _taylor_lower_bound(cell, model: TaylorModel) -> float:
     return lower_bound
 
 
-def _init_taylor_worker(n: int, iv_dps: int):
-    global _WORKER_MODEL, _WORKER_N, _WORKER_IV_DPS
+def _init_taylor_worker(n: int, iv_dps: int, initial_cell_mode: str):
+    global _WORKER_MODEL, _WORKER_N, _WORKER_IV_DPS, _WORKER_INITIAL_CELL_MODE
 
     _WORKER_N = int(n)
     _WORKER_IV_DPS = _set_iv_dps(int(iv_dps))
-    _WORKER_MODEL = build_taylor_model(_WORKER_N)
+    _WORKER_INITIAL_CELL_MODE = str(initial_cell_mode)
+    base_model = build_taylor_model(_WORKER_N)
+    root = initial_cell(_WORKER_N, mode=_WORKER_INITIAL_CELL_MODE)
+    _WORKER_MODEL = _wrap_model_for_charts(base_model, _cell_charts(root))
 
 
-def _get_reusable_pool(n: int, iv_dps: int, workers: int):
-    key = (int(n), int(iv_dps), int(workers))
+def _get_reusable_pool(n: int, iv_dps: int, workers: int, initial_cell_mode: str):
+    mode = str(initial_cell_mode)
+    key = (int(n), int(iv_dps), int(workers), mode)
     pool = _REUSABLE_POOLS.get(key)
 
     if pool is not None:
@@ -492,7 +611,7 @@ def _get_reusable_pool(n: int, iv_dps: int, workers: int):
     pool = mp_pool.Pool(
         processes=int(workers),
         initializer=_init_taylor_worker,
-        initargs=(int(n), int(iv_dps)),
+        initargs=(int(n), int(iv_dps), mode),
     )
     _REUSABLE_POOLS[key] = pool
     return pool
@@ -521,9 +640,11 @@ def _child_taylor_lb_task(args):
         )
         return lower_bound, stage, _cell_parameter_volume(child)
 
-    n, child, iv_dps, best_energy = args
+    n, child, iv_dps, best_energy, initial_cell_mode = args
     _set_iv_dps(iv_dps)
-    model = build_taylor_model(n)
+    base_model = build_taylor_model(n)
+    root = initial_cell(int(n), mode=str(initial_cell_mode))
+    model = _wrap_model_for_charts(base_model, _cell_charts(root))
     lower_bound, _, stage = _cascading_taylor_lower_bound(child, model, best_energy=best_energy)
     return lower_bound, stage, _cell_parameter_volume(child)
 
@@ -559,8 +680,10 @@ def search(
     measure_termination_volumes=False,
 ):
     iv_dps = _set_iv_dps(iv_dps)
-    model = build_taylor_model(n)
+    base_model = build_taylor_model(n)
     root = initial_cell(n, mode=initial_cell_mode)
+    charts = _cell_charts(root)
+    model = _wrap_model_for_charts(base_model, charts)
     tie_breaker = count()
 
     queue = []
@@ -605,13 +728,13 @@ def search(
         workers = int(parallel_workers) if parallel_workers is not None else mp_pool.cpu_count()
 
         if reuse_worker_pool:
-            pool = _get_reusable_pool(n, int(iv_dps), workers)
+            pool = _get_reusable_pool(n, int(iv_dps), workers, str(initial_cell_mode))
             pool_owned = False
         else:
             pool = mp_pool.Pool(
                 processes=workers,
                 initializer=_init_taylor_worker,
-                initargs=(int(n), int(iv_dps)),
+                initargs=(int(n), int(iv_dps), str(initial_cell_mode)),
             )
             pool_owned = True
 
@@ -725,6 +848,7 @@ def search(
                             config,
                             d_min=d_min,
                             alpha_min=alpha_min,
+                            charts=charts,
                         )
 
                     if center_feasible:
@@ -786,7 +910,7 @@ def search(
                             task_items = [(child, best) for child in feasible_children]
                         else:
                             task_items = [
-                                (n, child, int(iv_dps), best)
+                                (n, child, int(iv_dps), best, str(initial_cell_mode))
                                 for child in feasible_children
                             ]
 
@@ -863,6 +987,7 @@ def search(
                         config,
                         d_min=d_min,
                         alpha_min=alpha_min,
+                        charts=charts,
                     )
 
                 if center_feasible:
@@ -920,7 +1045,7 @@ def search(
                         child_tasks = [(child, best) for child in feasible_children]
                     else:
                         child_tasks = [
-                            (n, child, int(iv_dps), best)
+                            (n, child, int(iv_dps), best, str(initial_cell_mode))
                             for child in feasible_children
                         ]
                     child_results = _evaluate_child_lb_tasks(child_tasks, pool=pool)

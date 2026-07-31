@@ -60,17 +60,21 @@ def _candidate_to_flat(candidate: list[tuple[float, float]]) -> np.ndarray:
     return np.asarray(flat, dtype=float)
 
 
-def _free_variable_mask(n: int) -> list[bool]:
-    root = initial_cell(n)
+def _free_variable_mask(n: int, initial_cell_mode: str = "non-antipodal") -> list[bool]:
+    root = initial_cell(n, mode=initial_cell_mode)
     mask: list[bool] = []
     for particle in root.particle_ranges:
-        for fixed in particle.fixed:
+        fixed_values = particle.fixed
+        if isinstance(fixed_values, bool):
+            fixed_values = [fixed_values] * len(particle.bounds)
+
+        for fixed in fixed_values:
             mask.append(not bool(fixed))
     return mask
 
 
-def _variable_bounds(n: int) -> tuple[np.ndarray, np.ndarray]:
-    root = initial_cell(n)
+def _variable_bounds(n: int, initial_cell_mode: str = "non-antipodal") -> tuple[np.ndarray, np.ndarray]:
+    root = initial_cell(n, mode=initial_cell_mode)
     lo: list[float] = []
     hi: list[float] = []
 

@@ -98,7 +98,7 @@ def thomson_hessian(X):
 
 
 
-def spherical_jacobian(theta, phi):
+def spherical_jacobian(theta, phi, chart="standard"):
     """
     Jacobian dx/d(theta,phi)
 
@@ -120,12 +120,19 @@ def spherical_jacobian(theta, phi):
         0
     ])
 
-    # d/dphi
-    dphi = np.array([
-        c*ct,
-        c*st,
-        -s
-    ])
+    if chart == "antipodal_psi":
+        dphi = np.array([
+            c * ct,
+            c * st,
+            s,
+        ])
+    else:
+        # d/dphi
+        dphi = np.array([
+            c*ct,
+            c*st,
+            -s
+        ])
 
     return np.column_stack((dtheta,dphi))
 
@@ -134,7 +141,8 @@ def spherical_jacobian(theta, phi):
 def spherical_hessian_from_cartesian(
         X,
         H_cart,
-        grad_cart=None):
+    grad_cart=None,
+    charts=None):
     """
     Convert Cartesian Hessian to spherical Hessian.
 
@@ -165,6 +173,11 @@ def spherical_hessian_from_cartesian(
     J = np.zeros((3*N,2*N))
 
 
+    if charts is None:
+        charts = ["standard"] * N
+    elif len(charts) != N:
+        raise ValueError("charts length must match number of particles")
+
     angles=[]
 
     for i,p in enumerate(X):
@@ -173,9 +186,13 @@ def spherical_hessian_from_cartesian(
 
         theta=np.arctan2(y,x)
 
-        phi=np.arccos(z)
+        chart = charts[i]
+        if chart == "antipodal_psi":
+            phi=np.arccos(-z)
+        else:
+            phi=np.arccos(z)
 
-        angles.append((theta,phi))
+        angles.append((theta,phi,chart))
 
 
         J[
@@ -183,7 +200,8 @@ def spherical_hessian_from_cartesian(
             2*i:2*i+2
         ] = spherical_jacobian(
             theta,
-            phi
+            phi,
+            chart=chart,
         )
 
 
@@ -197,7 +215,7 @@ def spherical_hessian_from_cartesian(
 
     if grad_cart is not None:
 
-        for i,(theta,phi) in enumerate(angles):
+        for i,(theta,phi,chart) in enumerate(angles):
 
             s=np.sin(phi)
             c=np.cos(phi)
@@ -220,11 +238,18 @@ def spherical_hessian_from_cartesian(
                 0
             ])
 
-            dpp=np.array([
-                -s*ct,
-                -s*st,
-                -c
-            ])
+            if chart == "antipodal_psi":
+                dpp=np.array([
+                    -s*ct,
+                    -s*st,
+                    c
+                ])
+            else:
+                dpp=np.array([
+                    -s*ct,
+                    -s*st,
+                    -c
+                ])
 
 
             second=[

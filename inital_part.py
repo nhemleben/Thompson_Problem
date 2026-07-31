@@ -24,12 +24,14 @@ def initial_cell_non_antipodal(n):
         # particle 1 (fixed) at pole
         Particle_Ranges(
             bounds = [ Bounds(0.0,0.0), Bounds(0.0,0.0) ],
-            fixed = [True, True]
+            fixed = [True, True],
+            chart = "standard",
         ),
         # particle 2 fixed on equator that goes through pole
         Particle_Ranges(
             bounds = [ Bounds(0.0, 0.0), Bounds(phi_min,np.pi - phi_restriction) ],
-            fixed = [True, False]
+            fixed = [True, False],
+            chart = "standard",
         )
     ]
 
@@ -38,7 +40,8 @@ def initial_cell_non_antipodal(n):
             # particle 3 is limit to just 'eastern' hemisphere due to reflection symetry
             Particle_Ranges(
                 bounds = [ Bounds(0.0,np.pi +theta_easment), Bounds(phi_min,np.pi - phi_restriction,) ], 
-                fixed = [False, False]
+                fixed = [False, False],
+                chart = "standard",
             )
         )
 
@@ -46,7 +49,8 @@ def initial_cell_non_antipodal(n):
         bounds.append(
             Particle_Ranges(
                 bounds = [ Bounds(0.0,2*np.pi,), Bounds(phi_min,np.pi - phi_restriction,) ], 
-                fixed = [False, False]
+                fixed = [False, False],
+                chart = "standard",
             )
         )
 
@@ -74,12 +78,14 @@ def initial_cell_antipodal(n):
         # particle 1 (fixed) at pole
         Particle_Ranges(
             bounds = [ Bounds(0.0,0.0), Bounds(0.0,0.0) ],
-            fixed = [True, True]
+            fixed = [True, True],
+            chart = "standard",
         ),
         # particle 2 fixed on equator that goes through pole
         Particle_Ranges(
             bounds = [ Bounds(0.0, 0.0), Bounds(phi_min,np.pi - phi_restriction/2) ],
-            fixed = [True, False]
+            fixed = [True, False],
+            chart = "standard",
         )
     ]
 
@@ -90,7 +96,8 @@ def initial_cell_antipodal(n):
                 # Third particle when it is not the last and therefore polar particle
                 Particle_Ranges(
                     bounds = [ Bounds(0.0,np.pi +theta_easment), Bounds(phi_min,np.pi - phi_restriction/2) ], 
-                    fixed = [False, False]
+                    fixed = [False, False],
+                    chart = "standard",
                 )
             )
 
@@ -98,7 +105,8 @@ def initial_cell_antipodal(n):
                 bounds.append(
                     Particle_Ranges(
                         bounds = [ Bounds(0.0,2*np.pi,), Bounds(phi_min,np.pi - phi_restriction/2) ], 
-                        fixed = [False, False]
+                        fixed = [False, False],
+                        chart = "standard",
                     )
                 )
 
@@ -106,7 +114,8 @@ def initial_cell_antipodal(n):
         bounds.append(
             Particle_Ranges(
                 bounds = [ Bounds(0.0,2*np.pi,), Bounds(0,phi_restriction + phi_easment) ], 
-                fixed = [False, False]
+                fixed = [False, False],
+                chart = "antipodal_psi",
             )
         )
 

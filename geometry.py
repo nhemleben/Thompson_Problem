@@ -1,14 +1,22 @@
 import numpy as np
 
 
-def spherical_to_cart(theta, phi):
+def spherical_to_cart(theta, phi, chart="standard"):
     """
     Map spherical coordinates to S^2
     """
+    if chart == "antipodal_psi":
+        psi = phi
+        return np.array([
+            np.sin(psi) * np.cos(theta),
+            np.sin(psi) * np.sin(theta),
+            -np.cos(psi),
+        ])
+
     return np.array([
-        np.sin(phi)*np.cos(theta),
-        np.sin(phi)*np.sin(theta),
-        np.cos(phi)
+        np.sin(phi) * np.cos(theta),
+        np.sin(phi) * np.sin(theta),
+        np.cos(phi),
     ])
 
 

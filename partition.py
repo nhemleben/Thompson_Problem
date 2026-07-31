@@ -10,6 +10,7 @@ class Bounds:
 class Particle_Ranges:
     bounds:list[Bounds]
     fixed: list[bool] | bool = field(default_factory=list)
+    chart: str = "standard"
 
     def __post_init__(self):
         if isinstance(self.fixed, bool):
@@ -72,11 +73,13 @@ def _split_on_axis(cell, i, j):
 
     left_particle_ranges[i]=Particle_Ranges(
         bounds=left_bounds,
-        fixed=target_particle.fixed.copy()
+        fixed=target_particle.fixed.copy(),
+        chart=target_particle.chart,
     )
     right_particle_ranges[i]=Particle_Ranges(
         bounds=right_bounds,
-        fixed=target_particle.fixed.copy()
+        fixed=target_particle.fixed.copy(),
+        chart=target_particle.chart,
     )
 
 

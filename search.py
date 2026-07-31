@@ -63,6 +63,14 @@ def _center_config(cell):
     return config
 
 
+def _cell_charts(cell):
+
+    return [
+        getattr(particle_range, "chart", "standard")
+        for particle_range in cell.particle_ranges
+    ]
+
+
 def _cell_max_side_length(cell):
 
     max_side = 0.0
@@ -119,7 +127,7 @@ def _build_even_mesh(root, side_length=0.1, cell_filter=None):
     return ready
 
 
-def _respects_min_separation(config, d_min=None, alpha_min=None, epsilon=1e-15):
+def _respects_min_separation(config, d_min=None, alpha_min=None, epsilon=1e-15, charts=None):
 
     if d_min is None and alpha_min is None:
         return True
@@ -129,8 +137,11 @@ def _respects_min_separation(config, d_min=None, alpha_min=None, epsilon=1e-15):
     if alpha_min is not None:
         cos_alpha_min = np.cos(alpha_min)
 
-    for theta, phi in config:
-        point = spherical_to_cart(theta, phi)
+    if charts is None:
+        charts = ["standard"] * len(config)
+
+    for (theta, phi), chart in zip(config, charts):
+        point = spherical_to_cart(theta, phi, chart=chart)
 
         for prior_point in cartesian_points:
             if d_min is not None:
