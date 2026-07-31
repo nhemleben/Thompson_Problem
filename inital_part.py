@@ -81,13 +81,26 @@ def initial_cell_antipodal(n):
             fixed = [True, True],
             chart = "standard",
         ),
-        # particle 2 fixed on equator that goes through pole
-        Particle_Ranges(
-            bounds = [ Bounds(0.0, 0.0), Bounds(phi_min,np.pi - phi_restriction/2) ],
-            fixed = [True, False],
-            chart = "standard",
-        )
     ]
+    if n == 2:
+        #Last particle lives on the south pole this is just for test casing work
+        bounds.append(
+            Particle_Ranges(
+                bounds = [ Bounds(0.0,0.0), Bounds(0,phi_restriction + phi_easment) ], 
+                fixed = [True, False],
+                chart = "antipodal_psi",
+            )
+        )
+
+    if n >2:
+        bounds.append(
+            # particle 2 fixed on equator that goes through pole
+            Particle_Ranges(
+                bounds = [ Bounds(0.0, 0.0), Bounds(phi_min,np.pi - phi_restriction/2) ],
+                fixed = [True, False],
+                chart = "standard",
+            )
+        )
 
     if n >= 3:
         if n >3:
@@ -143,7 +156,7 @@ def initial_cell(n, antipodal=False, mode=None):
 
     normalized = str(selected_mode).strip().lower().replace("_", "-")
 
-    if normalized == "antipodal":
+    if normalized in {"antipodal", "anti-podal"}:
         return initial_cell_antipodal(n)
 
     if normalized in {"non-antipodal", "nonantipodal"}:

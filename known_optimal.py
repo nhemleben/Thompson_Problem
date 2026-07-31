@@ -48,7 +48,7 @@ def Lower_n(n):
     return 0.5*n*n - alpha*n**1.5
 
 
-def cartesian_to_spherical(cartesian):
+def cartesian_to_spherical(cartesian, antipodal=False):
     x, y, z = cartesian
     r = math.sqrt(x*x + y*y + z*z)
     theta = math.atan2(y, x)
@@ -57,10 +57,21 @@ def cartesian_to_spherical(cartesian):
 
     phi = math.acos(z / r)
 
+    if antipodal:
+        psi = math.pi - phi
+        return theta,psi
+
     return theta, phi
 
-def spherical_configuration(points):
-    return [cartesian_to_spherical(p) for p in points]
+def spherical_configuration(points, antipodal=False):
+    spherical_points = []
+    for index in range(len(points)-1):
+        point = points[index]
+        spherical_points .append(cartesian_to_spherical(point))
+    #Only the last point is the one that might be antipodal and need the weird chart etc.
+    spherical_points.append(cartesian_to_spherical(points[-1], antipodal=antipodal))
+    return spherical_points
+
 
 
 KNOWN_SOLUTIONS = {

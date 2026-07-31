@@ -9,7 +9,18 @@ from intvalpy import Interval
 
 from LDL_interval import interval_ldlt, validate_interval_ldlt_result
 from inital_part import initial_cell
-from taylor_search import build_taylor_model, _set_iv_dps
+from search import _cell_charts
+from taylor_search import build_taylor_model as _build_taylor_model_base
+from taylor_search import _set_iv_dps, _wrap_model_for_charts
+
+
+def build_taylor_model(n: int, initial_cell_mode: str = "non-antipodal"):
+    """Build a Taylor model and wrap it for the coordinate charts of the chosen mode."""
+
+    base_model = _build_taylor_model_base(int(n))
+    root = initial_cell(int(n), mode=initial_cell_mode)
+    charts = _cell_charts(root)
+    return _wrap_model_for_charts(base_model, charts)
 
 
 @dataclass
@@ -25,6 +36,8 @@ class ExclusionZoneResult:
     proved: bool
     half_width: float
     attempts: int
+    one_sided_lower_boundary_warning: bool = False
+    one_sided_positive_indices: tuple[int, ...] = ()
 
 
 def _parse_candidate(candidate_text: str) -> list[tuple[float, float]]:
@@ -112,13 +125,22 @@ def _build_interval_variables(
     h: float,
     lo_bounds: np.ndarray,
     hi_bounds: np.ndarray,
+    one_sided_positive_indices: set[int] | None = None,
 ) -> list[Any]:
     intervals: list[Any] = []
+    one_sided_positive_indices = one_sided_positive_indices or set()
 
     for i, x in enumerate(center_flat):
         if free_mask[i]:
-            lo = max(lo_bounds[i], x - h)
-            hi = min(hi_bounds[i], x + h)
+            if i in one_sided_positive_indices:
+                lo = max(lo_bounds[i], x)
+                hi = min(hi_bounds[i], x + h)
+            else:
+                lo = max(lo_bounds[i], x - h)
+                hi = min(hi_bounds[i], x + h)
+
+            if hi < lo:
+                return []
             intervals.append(_iv_from_bounds(lo, hi))
         else:
             intervals.append(_iv_from_bounds(x, x))
@@ -228,36 +250,80 @@ def prove_exclusion_zone(
         return ExclusionZoneResult(proved=False, half_width=0.0, attempts=0)
 
     distances_to_boundary: list[float] = []
+    one_sided_positive_indices: set[int] = set()
+    boundary_eps = max(float(tol), 1e-14)
+
     for i in free_indices:
         x = center_flat[i]
-        distances_to_boundary.append(x - lo_bounds[i])
-        distances_to_boundary.append(hi_bounds[i] - x)
+        left = x - lo_bounds[i]
+        right = hi_bounds[i] - x
 
-    max_centered_h = max(0.0, min(distances_to_boundary))
-    if max_centered_h <= 0.0:
-        return ExclusionZoneResult(proved=False, half_width=0.0, attempts=0)
+        # If the candidate sits on the lower boundary, permit a one-sided
+        # positive-direction interval [x, x+h] for this coordinate.
+        if left <= boundary_eps and right > boundary_eps:
+            one_sided_positive_indices.add(i)
+            distances_to_boundary.append(right)
+        else:
+            # Otherwise keep centered-box semantics.
+            distances_to_boundary.append(min(left, right))
 
-    h = min(initial_h, max_centered_h)
+    warning_one_sided = bool(one_sided_positive_indices)
+
+    max_reachable_h = max(0.0, min(distances_to_boundary))
+    if max_reachable_h <= 0.0:
+        return ExclusionZoneResult(
+            proved=False,
+            half_width=0.0,
+            attempts=0,
+            one_sided_lower_boundary_warning=warning_one_sided,
+            one_sided_positive_indices=tuple(sorted(one_sided_positive_indices)),
+        )
+
+    h = min(initial_h, max_reachable_h)
     attempts = 0
 
     while h > tol:
         attempts += 1
-        interval_variables = _build_interval_variables(center_flat, free_mask, h, lo_bounds, hi_bounds)
+        interval_variables = _build_interval_variables(
+            center_flat,
+            free_mask,
+            h,
+            lo_bounds,
+            hi_bounds,
+            one_sided_positive_indices,
+        )
+        if not interval_variables:
+            break
         if _hessian_box_is_pd(model, interval_variables, free_indices, validate_ldlt):
             break
         h *= 0.5
     else:
-        return ExclusionZoneResult(proved=False, half_width=0.0, attempts=attempts)
+        return ExclusionZoneResult(
+            proved=False,
+            half_width=0.0,
+            attempts=attempts,
+            one_sided_lower_boundary_warning=warning_one_sided,
+            one_sided_positive_indices=tuple(sorted(one_sided_positive_indices)),
+        )
 
     h_low = h
-    h_high = min(max_centered_h, h * growth)
+    h_high = min(max_reachable_h, h * growth)
 
-    while h_high < max_centered_h:
+    while h_high < max_reachable_h:
         attempts += 1
-        interval_variables = _build_interval_variables(center_flat, free_mask, h_high, lo_bounds, hi_bounds)
+        interval_variables = _build_interval_variables(
+            center_flat,
+            free_mask,
+            h_high,
+            lo_bounds,
+            hi_bounds,
+            one_sided_positive_indices,
+        )
+        if not interval_variables:
+            break
         if _hessian_box_is_pd(model, interval_variables, free_indices, validate_ldlt):
             h_low = h_high
-            h_high = min(max_centered_h, h_high * growth)
+            h_high = min(max_reachable_h, h_high * growth)
         else:
             break
 
@@ -267,19 +333,40 @@ def prove_exclusion_zone(
 
         h_mid = 0.5 * (h_low + h_high)
         attempts += 1
-        interval_variables = _build_interval_variables(center_flat, free_mask, h_mid, lo_bounds, hi_bounds)
+        interval_variables = _build_interval_variables(
+            center_flat,
+            free_mask,
+            h_mid,
+            lo_bounds,
+            hi_bounds,
+            one_sided_positive_indices,
+        )
+        if not interval_variables:
+            break
 
         if _hessian_box_is_pd(model, interval_variables, free_indices, validate_ldlt):
             h_low = h_mid
         else:
             h_high = h_mid
 
-    return ExclusionZoneResult(proved=True, half_width=h_low, attempts=attempts)
+    return ExclusionZoneResult(
+        proved=True,
+        half_width=h_low,
+        attempts=attempts,
+        one_sided_lower_boundary_warning=warning_one_sided,
+        one_sided_positive_indices=tuple(sorted(one_sided_positive_indices)),
+    )
 
 
-def _format_zone(candidate: list[tuple[float, float]], free_mask: list[bool], h: float) -> str:
+def _format_zone(
+    candidate: list[tuple[float, float]],
+    free_mask: list[bool],
+    h: float,
+    one_sided_positive_indices: set[int] | None = None,
+) -> str:
     lines = []
     flat = _candidate_to_flat(candidate)
+    one_sided_positive_indices = one_sided_positive_indices or set()
 
     for p in range(len(candidate)):
         theta_idx = 2 * p
@@ -289,12 +376,18 @@ def _format_zone(candidate: list[tuple[float, float]], free_mask: list[bool], h:
         phi = flat[phi_idx]
 
         if free_mask[theta_idx]:
-            theta_text = f"[{theta - h:.12g}, {theta + h:.12g}]"
+            if theta_idx in one_sided_positive_indices:
+                theta_text = f"[{theta:.12g}, {theta + h:.12g}]"
+            else:
+                theta_text = f"[{theta - h:.12g}, {theta + h:.12g}]"
         else:
             theta_text = f"fixed {theta:.12g}"
 
         if free_mask[phi_idx]:
-            phi_text = f"[{phi - h:.12g}, {phi + h:.12g}]"
+            if phi_idx in one_sided_positive_indices:
+                phi_text = f"[{phi:.12g}, {phi + h:.12g}]"
+            else:
+                phi_text = f"[{phi - h:.12g}, {phi + h:.12g}]"
         else:
             phi_text = f"fixed {phi:.12g}"
 
@@ -321,6 +414,13 @@ def main() -> None:
         ),
     )
     parser.add_argument("--iv-dps", type=int, default=50, help="Interval precision")
+    parser.add_argument(
+        "--initial-cell-mode",
+        type=str,
+        default="non-antipodal",
+        choices=["antipodal", "non-antipodal"],
+        help="Initial-cell chart mode used to interpret candidate coordinates",
+    )
     parser.add_argument(
         "--gradient-tol",
         type=float,
@@ -361,12 +461,12 @@ def main() -> None:
         )
 
     _set_iv_dps(int(args.iv_dps))
-    model = build_taylor_model(int(args.n))
+    model = build_taylor_model(int(args.n), initial_cell_mode=str(args.initial_cell_mode))
 
     center_flat = _candidate_to_flat(candidate)
-    free_mask = _free_variable_mask(int(args.n))
+    free_mask = _free_variable_mask(int(args.n), initial_cell_mode=str(args.initial_cell_mode))
     free_indices = [i for i, free in enumerate(free_mask) if free]
-    lo_bounds, hi_bounds = _variable_bounds(int(args.n))
+    lo_bounds, hi_bounds = _variable_bounds(int(args.n), initial_cell_mode=str(args.initial_cell_mode))
 
     local_min = check_local_minimum(
         model=model,
@@ -403,10 +503,22 @@ def main() -> None:
     print(f"  proved: {zone.proved}")
     print(f"  half-width h: {zone.half_width:.12e}")
     print(f"  LDLT checks: {zone.attempts}")
+    if zone.one_sided_lower_boundary_warning:
+        print(
+            "  warning: one-sided positive-direction zone used for free variables "
+            f"on lower boundary indices {list(zone.one_sided_positive_indices)}"
+        )
 
     if zone.proved and zone.half_width > 0.0:
         print("\nCertified parameter box (free variables vary, fixed variables remain fixed):")
-        print(_format_zone(candidate, free_mask, zone.half_width))
+        print(
+            _format_zone(
+                candidate,
+                free_mask,
+                zone.half_width,
+                set(zone.one_sided_positive_indices),
+            )
+        )
         print(
             "\nInterpretation: the interval Hessian is positive definite in this box, "
             "so the energy is strictly convex there. Combined with stationarity at the "
