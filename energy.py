@@ -42,6 +42,21 @@ def _thompson_energy_from_xyz(xyz):
 
     return E
 
+@njit(cache=True)
+def _thompson_energy_last_particle_from_xyz(xyz):
+    n = xyz.shape[0]
+    E = 0.0
+
+    for i in range(n-1):
+            dx = xyz[i, 0] - xyz[n-1, 0]
+            dy = xyz[i, 1] - xyz[n-1, 1]
+            dz = xyz[i, 2] - xyz[n-1, 2]
+            d2 = dx * dx + dy * dy + dz * dz
+
+            if d2 == 0.0:
+                return np.inf
+            E += 1.0 / np.sqrt(d2)
+    return E
 
 @lru_cache(maxsize=200000)
 def _spherical_to_cart_cached(theta, phi, chart="standard"):
@@ -73,3 +88,28 @@ def thompson_energy(points, charts=None):
         dtype=np.float64,
     )
     return float(_thompson_energy_from_xyz(xyz))
+
+def thompson_energy_last_particle(points, charts=None):
+
+    """
+    Coulomb energy on sphere
+    """
+
+    if not points:
+        return 0.0
+
+    if charts is None:
+        chart_sequence = ["standard"] * len(points)
+    else:
+        if len(charts) != len(points):
+            raise ValueError("charts length must match points length")
+        chart_sequence = list(charts)
+
+    xyz = np.asarray(
+        [
+            _spherical_to_cart_cached(theta, phi, chart)
+            for (theta, phi), chart in zip(points, chart_sequence)
+        ],
+        dtype=np.float64,
+    )
+    return float(_thompson_energy_last_particle_from_xyz(xyz))
