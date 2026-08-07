@@ -27,6 +27,7 @@ from taylor_search import (
 	_cascading_taylor_lower_bound,
 	_cell_parameter_volume,
 	_set_iv_dps,
+	TaylorModel,
 	_wrap_model_for_charts,
 	build_taylor_model,
 )
@@ -38,13 +39,50 @@ from exsclusion_zone_depth_check import positive_definite_boundary_expansion
 _WORKER_MODEL = None
 
 
+def _fixed_indices_from_cell(cell) -> tuple[int, ...]:
+	fixed_indices: list[int] = []
+	for particle_index, particle_range in enumerate(cell.particle_ranges):
+		for local_dim, is_fixed in enumerate(particle_range.fixed):
+			if is_fixed:
+				fixed_indices.append(2 * particle_index + local_dim)
+	return tuple(fixed_indices)
+
+
+def _wrap_model_with_fixed_gradient_zeroing(base_model: TaylorModel, cell) -> TaylorModel:
+	fixed_indices = _fixed_indices_from_cell(cell)
+
+	def energy(values):
+		return base_model.energy(values)
+
+	def gradient(values):
+		gradient_values = np.asarray(base_model.gradient(values), dtype=object).reshape(-1).copy()
+		for index in fixed_indices:
+			gradient_values[index] = 0.0
+		return gradient_values
+
+	def hessian(values):
+		return base_model.hessian(values)
+
+	def third_derivative(values):
+		return base_model.third_derivative(values)
+
+	return TaylorModel(
+		energy=energy,
+		gradient=gradient,
+		hessian=hessian,
+		third_derivative=third_derivative,
+		third_derivative_usable=base_model.third_derivative_usable,
+	)
+
+
 def _init_lb_worker(n: int, iv_dps: int, initial_cell_mode: str):
 	global _WORKER_MODEL
 	_set_iv_dps(int(iv_dps))
 	root = initial_cell(int(n), mode=str(initial_cell_mode))
 	charts = _cell_charts(root)
 	base_model = build_taylor_model(int(n))
-	_WORKER_MODEL = _wrap_model_for_charts(base_model, charts)
+	chart_model = _wrap_model_for_charts(base_model, charts)
+	_WORKER_MODEL = _wrap_model_with_fixed_gradient_zeroing(chart_model, root)
 
 
 def _worker_cell_lb(task):
@@ -91,31 +129,34 @@ def _zone_interval_for_index(
 	return center_value - float(half_width), center_value + float(half_width)
 
 
-def _cell_dimension_bounds(cell, index: int) -> tuple[float, float]:
-	particle_index = index // 2
-	local_dim = index % 2
-	bounds = cell.particle_ranges[particle_index].bounds[local_dim]
-	return float(bounds.lo), float(bounds.hi)
-
-
-def _cell_fully_inside_exclusion_zone(
-	cell,
+def _zone_bounds_for_free_indices(
 	center_flat: np.ndarray,
-	free_mask: list[bool],
+	free_indices: list[int],
 	half_width: float,
 	one_sided_positive_indices: set[int],
-) -> bool:
-	for index, is_free in enumerate(free_mask):
-		if not is_free:
-			continue
-
+) -> list[tuple[int, float, float]]:
+	zone_bounds: list[tuple[int, float, float]] = []
+	for index in free_indices:
 		zone_lo, zone_hi = _zone_interval_for_index(
 			center_flat,
 			index,
 			half_width,
 			one_sided_positive_indices,
 		)
-		cell_lo, cell_hi = _cell_dimension_bounds(cell, index)
+		zone_bounds.append((index, zone_lo, zone_hi))
+	return zone_bounds
+
+
+def _cell_fully_inside_exclusion_zone(
+	cell,
+	zone_bounds: list[tuple[int, float, float]],
+) -> bool:
+	for index, zone_lo, zone_hi in zone_bounds:
+		particle_index = index // 2
+		local_dim = index % 2
+		bounds = cell.particle_ranges[particle_index].bounds[local_dim]
+		cell_lo = float(bounds.lo)
+		cell_hi = float(bounds.hi)
 
 		if cell_lo < zone_lo or cell_hi > zone_hi:
 			return False
@@ -228,7 +269,7 @@ def _write_surviving_cells_csv(
 			center_flat = _flatten_center_config(center_config)
 			gradient = np.asarray(model.gradient(center_flat), dtype=object).reshape(-1)
 			gradient_mid = np.asarray([_interval_midpoint(component) for component in gradient], dtype=float)
-			center_energy = float(thompson_energy(center_config, charts=_cell_charts(cell)))
+			center_energy = float(thompson_energy(center_config, charts=charts))
 			row = {
 				"depth": depth,
 				"cell_index": cell_index,
@@ -272,10 +313,23 @@ def run_depth_limited_proof(
 			f"for mode={initial_cell_mode}."
 		)
 	one_sided_positive_indices = set(zone.one_sided_positive_indices)
-	model = _wrap_model_for_charts(build_taylor_model(n), charts)
+	free_indices = [i for i, is_free in enumerate(free_mask) if is_free]
+	zone_bounds = _zone_bounds_for_free_indices(
+		center_flat,
+		free_indices,
+		zone.half_width,
+		one_sided_positive_indices,
+	)
+	model = _wrap_model_with_fixed_gradient_zeroing(
+		_wrap_model_for_charts(build_taylor_model(n), charts),
+		root,
+	)
 	use_min_separation = use_min_separation or (d_min is not None) or (alpha_min is not None)
 	if use_min_separation and d_min is None:
 		d_min = float(d_min_bound(n))
+	if poss_def_boundary_check_level is not None and int(poss_def_boundary_check_level) <= 0:
+		raise ValueError("--poss-def-boundary-check-level must be a positive integer")
+	boundary_pd_period = int(poss_def_boundary_check_level) if poss_def_boundary_check_level is not None else None
 	min_sep_cos_alpha = float(np.cos(alpha_min)) if alpha_min is not None else None
 	min_sep_d_sq = float(d_min) * float(d_min) if d_min is not None else None
 	pool = None
@@ -325,32 +379,29 @@ def run_depth_limited_proof(
 			for cell in frontier:
 				if _cell_fully_inside_exclusion_zone(
 					cell,
-					center_flat,
-					free_mask,
-					zone.half_width,
-					one_sided_positive_indices,
+					zone_bounds,
 				):
 					pruned_by_zone += 1
 					continue
 				zone_survivors.append(cell)
 
-			min_sep_survivors = []
-			for cell in zone_survivors:
-				if not use_min_separation:
+			min_sep_survivors = zone_survivors
+			if not use_min_separation:
+				pass
+			else:
+				min_sep_survivors = []
+				for cell in zone_survivors:
+					min_sep_ok, _ = _min_separation_state_from_cell(
+						cell,
+						d_min=d_min,
+						alpha_min=alpha_min,
+						cos_alpha_min=min_sep_cos_alpha,
+						d_min_sq=min_sep_d_sq,
+					)
+					if not min_sep_ok:
+						pruned_by_min_sep += 1
+						continue
 					min_sep_survivors.append(cell)
-					continue
-
-				min_sep_ok, _ = _min_separation_state_from_cell(
-					cell,
-					d_min=d_min,
-					alpha_min=alpha_min,
-					cos_alpha_min=min_sep_cos_alpha,
-					d_min_sq=min_sep_d_sq,
-				)
-				if not min_sep_ok:
-					pruned_by_min_sep += 1
-					continue
-				min_sep_survivors.append(cell)
 
 			lbs = _evaluate_frontier_lbs(
 				min_sep_survivors,
@@ -368,8 +419,8 @@ def run_depth_limited_proof(
 
 			if (
 				not boundary_pd_done
-				and poss_def_boundary_check_level is not None
-				and depth % int(poss_def_boundary_check_level) == 0
+				and boundary_pd_period is not None
+				and depth % boundary_pd_period == 0
 				and active_at_depth
 			):
 				kept_after_pd, pruned_pd_cells, pd_events = positive_definite_boundary_expansion(
