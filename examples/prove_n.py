@@ -1,4 +1,5 @@
 import argparse
+import csv
 import math
 import multiprocessing as mp
 import sys
@@ -21,7 +22,7 @@ from exsclusion_zone import (
 from inital_part import initial_cell
 from known_optimal import KNOWN_SOLUTIONS, spherical_configuration
 from partition import split
-from search import _cell_charts, _ordered_theta_possible
+from search import _cell_charts, _center_config, _min_separation_state_from_cell, _ordered_theta_possible
 from taylor_search import (
 	_cascading_taylor_lower_bound,
 	_cell_parameter_volume,
@@ -29,7 +30,9 @@ from taylor_search import (
 	_wrap_model_for_charts,
 	build_taylor_model,
 )
+from bound import d_min as d_min_bound
 from energy import thompson_energy
+from exsclusion_zone_depth_check import positive_definite_boundary_expansion
 
 
 _WORKER_MODEL = None
@@ -169,12 +172,89 @@ def _depth_report(depth: int, cells: list, best_energy: float):
 	)
 
 
+def _flatten_center_config(center_config: list[tuple[float, float]]) -> np.ndarray:
+	flat: list[float] = []
+	for theta, phi in center_config:
+		flat.append(float(theta))
+		flat.append(float(phi))
+	return np.asarray(flat, dtype=float)
+
+
+def _center_row_fields(center_config: list[tuple[float, float]]) -> dict[str, float]:
+	fields: dict[str, float] = {}
+	for index, (theta, phi) in enumerate(center_config):
+		fields[f"theta_{index}"] = float(theta)
+		fields[f"phi_{index}"] = float(phi)
+	return fields
+
+
+def _interval_midpoint(value) -> float:
+	if hasattr(value, "a") and hasattr(value, "b"):
+		return 0.5 * (float(value.a) + float(value.b))
+	return float(value)
+
+
+def _write_surviving_cells_csv(
+	path: Path,
+	depth: int,
+	cells: list,
+	model,
+	charts: list[str],
+) -> Path:
+	path.parent.mkdir(parents=True, exist_ok=True)
+
+	if not cells:
+		with path.open("w", newline="") as handle:
+			writer = csv.writer(handle)
+			writer.writerow(["depth", "cell_index", "volume", "center_energy"])
+		return path
+
+	fieldnames = ["depth", "cell_index"]
+	for particle_index in range(len(cells[0].particle_ranges)):
+		fieldnames.append(f"theta_{particle_index}")
+		fieldnames.append(f"phi_{particle_index}")
+	fieldnames.append("center_energy")
+	fieldnames.append("volume")
+	fieldnames.append("gradient_norm")
+	for component_index in range(2 * len(cells[0].particle_ranges)):
+		fieldnames.append(f"gradient_{component_index}")
+
+	with path.open("w", newline="") as handle:
+		writer = csv.DictWriter(handle, fieldnames=fieldnames)
+		writer.writeheader()
+
+		for cell_index, cell in enumerate(cells):
+			center_config = _center_config(cell)
+			center_flat = _flatten_center_config(center_config)
+			gradient = np.asarray(model.gradient(center_flat), dtype=object).reshape(-1)
+			gradient_mid = np.asarray([_interval_midpoint(component) for component in gradient], dtype=float)
+			center_energy = float(thompson_energy(center_config, charts=_cell_charts(cell)))
+			row = {
+				"depth": depth,
+				"cell_index": cell_index,
+				"center_energy": center_energy,
+				"volume": _cell_parameter_volume(cell),
+				"gradient_norm": float(np.linalg.norm(gradient_mid)),
+			}
+			row.update(_center_row_fields(center_config))
+			for component_index, component_value in enumerate(gradient_mid):
+				row[f"gradient_{component_index}"] = float(component_value)
+			writer.writerow(row)
+
+	return path
+
+
 def run_depth_limited_proof(
 	n: int,
 	search_depth: int,
 	iv_dps: int,
+	use_min_separation: bool,
+	d_min: float | None,
+	alpha_min: float | None,
+	poss_def_boundary_check_level: int | None,
 	initial_cell_mode: str,
 	parallel_workers: int,
+	csv_path: str | None,
 ):
 	candidate, center_flat, free_mask, zone = _build_exclusion_zone(
 		n=n,
@@ -193,6 +273,11 @@ def run_depth_limited_proof(
 		)
 	one_sided_positive_indices = set(zone.one_sided_positive_indices)
 	model = _wrap_model_for_charts(build_taylor_model(n), charts)
+	use_min_separation = use_min_separation or (d_min is not None) or (alpha_min is not None)
+	if use_min_separation and d_min is None:
+		d_min = float(d_min_bound(n))
+	min_sep_cos_alpha = float(np.cos(alpha_min)) if alpha_min is not None else None
+	min_sep_d_sq = float(d_min) * float(d_min) if d_min is not None else None
 	pool = None
 	worker_count = max(1, int(parallel_workers))
 	if worker_count > 1:
@@ -204,7 +289,10 @@ def run_depth_limited_proof(
 
 	frontier = [root]
 	pruned_by_zone = 0
+	pruned_by_min_sep = 0
+	pruned_by_boundary_pd = 0
 	pruned_by_bound = 0
+	boundary_pd_done = False
 
 	print("Known-candidate certification")
 	print(f"  n: {n}")
@@ -213,10 +301,19 @@ def run_depth_limited_proof(
 	print(f"  exclusion half-width: {zone.half_width:.12e}")
 	print(f"  exclusion attempts: {zone.attempts}")
 	print(f"  lb workers: {worker_count}")
+	print(f"  use_min_separation: {use_min_separation}")
+	if d_min is not None:
+		print(f"  d_min: {d_min:.12e}")
+	if alpha_min is not None:
+		print(f"  alpha_min: {alpha_min:.12e}")
+	print(f"  poss_def_boundary_check_level: {poss_def_boundary_check_level}")
 	if zone.one_sided_lower_boundary_warning:
 		print("  warning: one-sided lower-boundary exclusion used")
 	print("")
 	print("Depth-by-depth branch/prune report")
+	depth_csv_path = Path(csv_path) if csv_path else Path(__file__).with_name(
+		f"prove_n_survivors_n{n}_{initial_cell_mode}_depth{search_depth}.csv"
+	)
 
 	try:
 		for depth in range(search_depth + 1):
@@ -237,24 +334,75 @@ def run_depth_limited_proof(
 					continue
 				zone_survivors.append(cell)
 
+			min_sep_survivors = []
+			for cell in zone_survivors:
+				if not use_min_separation:
+					min_sep_survivors.append(cell)
+					continue
+
+				min_sep_ok, _ = _min_separation_state_from_cell(
+					cell,
+					d_min=d_min,
+					alpha_min=alpha_min,
+					cos_alpha_min=min_sep_cos_alpha,
+					d_min_sq=min_sep_d_sq,
+				)
+				if not min_sep_ok:
+					pruned_by_min_sep += 1
+					continue
+				min_sep_survivors.append(cell)
+
 			lbs = _evaluate_frontier_lbs(
-				zone_survivors,
+				min_sep_survivors,
 				model,
 				best_known,
 				pool=pool,
 			)
 
 			active_at_depth = []
-			for cell, lb in zip(zone_survivors, lbs):
+			for cell, lb in zip(min_sep_survivors, lbs):
 				if lb is None or lb >= best_known:
 					pruned_by_bound += 1
 					continue
 				active_at_depth.append(cell)
 
+			if (
+				not boundary_pd_done
+				and poss_def_boundary_check_level is not None
+				and depth % int(poss_def_boundary_check_level) == 0
+				and active_at_depth
+			):
+				kept_after_pd, pruned_pd_cells, pd_events = positive_definite_boundary_expansion(
+					active_at_depth,
+					model,
+					center_flat,
+					free_mask,
+					zone.half_width,
+					one_sided_positive_indices,
+					validate_ldlt=True,
+				)
+				if pruned_pd_cells:
+					for event in pd_events:
+						print(
+							f"positive definite boundary expansion termination: depth={depth}, "
+							f"cell_index={event['cell_index']}"
+						)
+					pruned_by_boundary_pd += len(pruned_pd_cells)
+					active_at_depth = kept_after_pd
+				boundary_pd_done = True
+
 			_depth_report(depth, active_at_depth, best_known)
 
 			if depth == search_depth:
 				print(f"terminated at depth limit: search_depth={search_depth}")
+				written_csv = _write_surviving_cells_csv(
+					depth_csv_path,
+					depth,
+					active_at_depth,
+					model,
+					charts,
+				)
+				print(f"wrote surviving-cell csv: {written_csv}")
 				frontier = active_at_depth
 				break
 
@@ -263,11 +411,21 @@ def run_depth_limited_proof(
 				children = split(cell)
 				if not children:
 					continue
-				next_frontier.extend(
-					child
-					for child in children
-					if _ordered_theta_possible(child)
-				)
+				for child in children:
+					if not _ordered_theta_possible(child):
+						continue
+					if use_min_separation:
+						child_ok, _ = _min_separation_state_from_cell(
+							child,
+							d_min=d_min,
+							alpha_min=alpha_min,
+							cos_alpha_min=min_sep_cos_alpha,
+							d_min_sq=min_sep_d_sq,
+						)
+						if not child_ok:
+							pruned_by_min_sep += 1
+							continue
+					next_frontier.append(child)
 
 			frontier = next_frontier
 		else:
@@ -281,6 +439,8 @@ def run_depth_limited_proof(
 	print("Summary")
 	print(f"  remaining_active_cells: {len(frontier)}")
 	print(f"  zone_pruned_cells: {pruned_by_zone}")
+	print(f"  min_separation_pruned_cells: {pruned_by_min_sep}")
+	print(f"  positive_definite_boundary_pruned_cells: {pruned_by_boundary_pd}")
 	print(f"  bound_pruned_cells: {pruned_by_bound}")
 	print(f"  final_remaining_volume: {sum(_cell_parameter_volume(cell) for cell in frontier):.12e}")
 
@@ -295,6 +455,15 @@ def main() -> None:
 	parser.add_argument("--n", type=int, default=3, help="Number of particles")
 	parser.add_argument("--search-depth", type=int, default=10, help="Depth limit for branch/prune")
 	parser.add_argument("--iv-dps", type=int, default=50, help="Interval precision")
+	parser.add_argument("--use-min-separation", action="store_true", help="Enable geometric min-separation pruning")
+	parser.add_argument("--d-min", type=float, default=None, help="Optional explicit minimum pair distance")
+	parser.add_argument("--alpha-min", type=float, default=None, help="Optional explicit minimum angular separation (radians)")
+	parser.add_argument(
+		"--poss-def-boundary-check-level",
+		type=int,
+		default=None,
+		help="Depth level at which to prune border cells whose interval Hessian is positive definite",
+	)
 	parser.add_argument(
 		"--parallel-workers",
 		type=int,
@@ -308,14 +477,25 @@ def main() -> None:
 		choices=["non-antipodal", "antipodal"],
 		help="Initial-cell chart mode",
 	)
+	parser.add_argument(
+		"--csv-path",
+		type=str,
+		default=None,
+		help="Optional CSV output path for surviving cells when the search stops at the depth limit",
+	)
 	args = parser.parse_args()
 
 	run_depth_limited_proof(
 		n=int(args.n),
 		search_depth=int(args.search_depth),
+		use_min_separation=args.use_min_separation,
 		iv_dps=int(args.iv_dps),
+		d_min=args.d_min,
+		alpha_min=args.alpha_min,
+		poss_def_boundary_check_level=args.poss_def_boundary_check_level,
 		initial_cell_mode=str(args.initial_cell_mode),
 		parallel_workers=int(args.parallel_workers),
+		csv_path=args.csv_path,
 	)
 
 

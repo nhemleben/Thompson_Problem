@@ -19,6 +19,7 @@ import numpy as np
 import sympy as sp  # type: ignore[import-untyped]
 
 from inital_part import initial_cell
+from bound import d_min
 from partition import split_with_index
 from energy import thompson_energy
 from search import (
@@ -674,6 +675,7 @@ def search(
     visualize_final=True,
     d_min=None,
     alpha_min=None,
+    use_min_separation=False,
     initial_mesh_side_length=0.1,
     initial_cell_mode="non-antipodal",
     reuse_worker_pool=True,
@@ -693,7 +695,9 @@ def search(
     best = float("inf")
     best_config = None
 
-    use_min_separation = (d_min is not None) or (alpha_min is not None)
+    use_min_separation = use_min_separation or (d_min is not None) or (alpha_min is not None)
+    if use_min_separation and d_min is None:
+        d_min = d_min(n)
     min_sep_cos_alpha = float(np.cos(alpha_min)) if alpha_min is not None else None
     min_sep_d_sq = float(d_min) * float(d_min) if d_min is not None else None
     termination_tracker = _init_termination_tracker() if measure_termination_volumes else None
@@ -1149,6 +1153,7 @@ def main():
     parser.add_argument("--visualize-search", action="store_true")
     parser.add_argument("--visualize-all-particles", action="store_true")
     parser.add_argument("--visualize-mesh", action="store_true")
+    parser.add_argument("--use-min-separation", action="store_true")
     parallel_group = parser.add_mutually_exclusive_group()
     parallel_group.add_argument("--parallel-child-bounds", dest="parallel_child_bounds", action="store_true")
     parallel_group.add_argument("--no-parallel-child-bounds", dest="parallel_child_bounds", action="store_false")
@@ -1185,6 +1190,7 @@ def main():
         visualize_search=args.visualize_search,
         visualize_all_particles=args.visualize_all_particles,
         visualize_mesh=args.visualize_mesh,
+        use_min_separation=args.use_min_separation,
         show_progress=not args.no_show_progress,
         parallel_child_bounds=args.parallel_child_bounds,
         parallel_workers=args.parallel_workers,
