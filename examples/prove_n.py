@@ -47,7 +47,6 @@ from exsclusion_zone_depth_check import positive_definite_boundary_expansion
 
 _WORKER_MODEL = None
 _WORKER_LIPSHITZ_ONLY = False
-use_min_sep_depth_limit = 10
 
 
 def _lipshitz_only_for_depth(
@@ -445,6 +444,7 @@ def run_depth_limited_proof(
 	parallel_workers: int,
 	csv_path: str | None,
 	csv_include_gradient: bool,
+	use_min_sep_depth_limit: int | None,
 ):
 	candidate, center_flat, free_mask, zone = _build_exclusion_zone(
 		n=n,
@@ -542,7 +542,7 @@ def run_depth_limited_proof(
 				zone_survivors.append((cell, pair_state))
 
 			min_sep_survivors = zone_survivors
-			if not use_min_separation or depth > use_min_sep_depth_limit:
+			if not use_min_separation or (use_min_sep_depth_limit is not None and depth > use_min_sep_depth_limit):
 				pass
 			else:
 				min_sep_survivors = []
@@ -717,6 +717,12 @@ def main() -> None:
 	parser.add_argument("--iv-dps", type=int, default=50, help="Interval precision")
 	parser.add_argument("--use-min-separation", action="store_true", help="Enable geometric min-separation pruning")
 	parser.add_argument(
+		"--use-min-sep-depth-limit",
+		type=int,
+		default=None,
+		help="Use min-separation pruning only through this depth (inclusive), then disable it",
+	)
+	parser.add_argument(
 		"--lipshitz-only",
 		action="store_true",
 		help="Use only the Lipschitz stage in cascading Taylor lower bounds",
@@ -775,6 +781,7 @@ def main() -> None:
 		parallel_workers=int(args.parallel_workers),
 		csv_path=args.csv_path,
 		csv_include_gradient=bool(args.csv_include_gradient),
+		use_min_sep_depth_limit=args.use_min_sep_depth_limit,
 	)
 
 
