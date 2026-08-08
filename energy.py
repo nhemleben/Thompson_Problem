@@ -64,6 +64,11 @@ def _spherical_to_cart_cached(theta, phi, chart="standard"):
     return float(point[0]), float(point[1]), float(point[2])
 
 
+def _spherical_to_cart_uncached(theta, phi, chart="standard"):
+    point = spherical_to_cart(theta, phi, chart=chart)
+    return float(point[0]), float(point[1]), float(point[2])
+
+
 def thompson_energy(points, charts=None):
 
     """
@@ -83,6 +88,33 @@ def thompson_energy(points, charts=None):
     xyz = np.asarray(
         [
             _spherical_to_cart_cached(theta, phi, chart)
+            for (theta, phi), chart in zip(points, chart_sequence)
+        ],
+        dtype=np.float64,
+    )
+    return float(_thompson_energy_from_xyz(xyz))
+
+
+def thompson_energy_uncached(points, charts=None):
+
+    """
+    Coulomb energy on sphere without using the spherical-to-Cartesian LRU cache.
+    Prefer this for one-shot evaluations where cache hit-rate is expected to be low.
+    """
+
+    if not points:
+        return 0.0
+
+    if charts is None:
+        chart_sequence = ["standard"] * len(points)
+    else:
+        if len(charts) != len(points):
+            raise ValueError("charts length must match points length")
+        chart_sequence = list(charts)
+
+    xyz = np.asarray(
+        [
+            _spherical_to_cart_uncached(theta, phi, chart)
             for (theta, phi), chart in zip(points, chart_sequence)
         ],
         dtype=np.float64,

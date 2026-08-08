@@ -54,9 +54,82 @@ def torque_lipschitz(x, points, cell_radius):
         cross = np.cross(p, x)
         cross_norm = np.linalg.norm(cross)
 
-        LT += (delta**(-3)) + cross_norm*3.0 * delta**(-4)
+        #Gone back on my word, need estimates on cross norm
+        #LT += (delta**(-3)) + cross_norm*3.0 * delta**(-4)
+        LT += (delta**(-3)) + 3.0 * delta**(-4)
 
     return LT
+
+
+def psi_and_torque_lipschitz(x, points, cell_radius):
+    """
+    Compute Psi(x)=||T(x)||^2 and the torque Lipschitz bound in one pass.
+
+    This avoids two full loops over neighbors and reuses distance/cross terms.
+        L = 2 (||T(x)|| + LT*r) LT
+    """
+
+    x_arr = np.asarray(x, dtype=float)
+    T = np.zeros(3, dtype=float)
+    LT = 0.0
+
+    for p in points:
+        p_arr = np.asarray(p, dtype=float)
+        r = x_arr - p_arr
+        d = np.linalg.norm(r)
+        cross = np.cross(p_arr, x_arr)
+
+        inv_d3 = d ** (-3)
+        T += cross * inv_d3
+
+        delta = max(d - cell_radius, 1e-12)
+        inv_delta3 = delta ** (-3)
+        inv_delta4 = delta ** (-4)
+        #LT += inv_delta3 + np.linalg.norm(cross) * 3.0 * inv_delta4
+        #This might be more honest?
+        LT += inv_delta3 +  3.0 * inv_delta4
+
+
+
+    Tnorm = np.linalg.norm(T)
+
+    LTpsi = 2.0 * (Tnorm + LT * cell_radius) * LT
+
+    psi = float(np.dot(T, T))
+    return psi, LTpsi
+
+def psi_and_jacobian(x, points, cell_radius):
+    """
+    Compute Psi(x)=||T(x)||^2 and the torque Jacobian in one pass.
+    """
+
+    x_arr = np.asarray(x, dtype=float)
+    T = np.zeros(3, dtype=float)
+    J = np.zeros((3, 3), dtype=float)
+
+    for p in points:
+        p_arr = np.asarray(p, dtype=float)
+        r = x_arr - p_arr
+        d = np.linalg.norm(r)
+        cross = np.cross(p_arr, x_arr)
+
+        inv_d3 = d ** (-3)
+        T += cross * inv_d3
+
+        J += (
+            cross_matrix(p_arr) / d**3
+            -
+            3.0 * np.outer(cross, r) / d**5
+        )
+
+    psi = float(np.dot(T, T))
+    return psi, T, J
+
+def bound_psi_with_jacobian(x, points, cell_radius):
+    psi, T, J = psi_and_jacobian(x, points, cell_radius)
+    L = 2 * cell_radius * np.linalg.norm(np.transpose(J) @ T, ord=2)
+    return psi, L
+
 
 
 def psi_lipschitz(x, points, cell_radius):

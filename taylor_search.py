@@ -18,10 +18,12 @@ import mpmath as mp
 import numpy as np
 import sympy as sp  # type: ignore[import-untyped]
 
+from last_particle_lipshitz import bound_psi_with_jacobian, spherical_jacobian
 from inital_part import initial_cell
 from bound import d_min
+from geometry import spherical_to_cart
 from partition import split_with_index
-from energy import thompson_energy
+from energy import thompson_energy, thompson_energy_uncached
 from search import (
     _build_even_mesh,
     _cell_charts,
@@ -141,6 +143,18 @@ class TaylorModel:
     hessian: Callable[[list[float] | np.ndarray], np.ndarray]
     third_derivative: Callable[[list[float] | np.ndarray], np.ndarray]
     third_derivative_usable: bool = True
+
+
+@dataclass
+class CellTaylorMetadata:
+    center: np.ndarray
+    radius: np.ndarray
+    intervals: list[Any]
+    config: list[tuple[float, float]]
+    charts: list[str]
+    metric_radius: float
+    active_indices: tuple[int, ...]
+    center_energy: float | None = None
 
 
 def _particle_symbols(n: int):
@@ -352,6 +366,80 @@ def _spherical_metric_radius(cell) -> float:
     return math.sqrt(total)
 
 
+def _child_ordered_theta_possible_from_parent(
+    parent_cell,
+    child_cell,
+    split_particle_index,
+    epsilon=1e-15,
+):
+    if split_particle_index is None:
+        return _ordered_theta_possible(child_cell, epsilon=epsilon)
+
+    # Ordering constraints apply only to particles from index 2 onward.
+    if split_particle_index < 2:
+        return True
+
+    parent_theta = parent_cell.particle_ranges[split_particle_index].bounds[0]
+    child_theta = child_cell.particle_ranges[split_particle_index].bounds[0]
+
+    # If theta bounds did not change, ordering feasibility is inherited.
+    if parent_theta.lo == child_theta.lo and parent_theta.hi == child_theta.hi:
+        return True
+
+    return _ordered_theta_possible(child_cell, epsilon=epsilon)
+
+
+def _cell_taylor_metadata(cell) -> CellTaylorMetadata:
+    center: list[float] = []
+    radius: list[float] = []
+    intervals: list[Any] = []
+    config: list[tuple[float, float]] = []
+    charts: list[str] = []
+    active_indices: list[int] = []
+    metric_total = 0.0
+
+    for particle_range in cell.particle_ranges:
+        chart = getattr(particle_range, "chart", "standard")
+        charts.append(chart)
+
+        theta_bounds, phi_bounds = particle_range.bounds
+
+        theta_center = 0.5 * (theta_bounds.lo + theta_bounds.hi)
+        phi_center = 0.5 * (phi_bounds.lo + phi_bounds.hi)
+        config.append((theta_center, phi_center))
+
+        d_theta = 0.5 * (theta_bounds.hi - theta_bounds.lo)
+        d_phi = 0.5 * (phi_bounds.hi - phi_bounds.lo)
+
+        theta_idx = len(radius)
+        center.append(theta_center)
+        center.append(phi_center)
+        radius.append(d_theta)
+        if d_theta > 0.0:
+            active_indices.append(theta_idx)
+
+        phi_idx = len(radius)
+        radius.append(d_phi)
+        if d_phi > 0.0:
+            active_indices.append(phi_idx)
+
+        intervals.append(_iv_interval(theta_bounds.lo, theta_bounds.hi))
+        intervals.append(_iv_interval(phi_bounds.lo, phi_bounds.hi))
+
+        metric_total += d_theta * d_theta
+        metric_total += _max_sin_sq(theta_bounds.lo, theta_bounds.hi) * d_phi * d_phi
+
+    return CellTaylorMetadata(
+        center=np.asarray(center, dtype=float),
+        radius=np.asarray(radius, dtype=float),
+        intervals=intervals,
+        config=config,
+        charts=charts,
+        metric_radius=math.sqrt(metric_total),
+        active_indices=tuple(active_indices),
+    )
+
+
 def _cell_parameter_volume(cell) -> float:
     volume = 1.0
     free_dims = 0
@@ -467,7 +555,7 @@ def _taylor_enclosure(cell, model: TaylorModel):
     config = _center_config(cell)
     charts = _cell_charts(cell)
 
-    center_energy = thompson_energy(config, charts=charts)
+    center_energy = thompson_energy_uncached(config, charts=charts)
     qc_energy: Any = _iv_interval(center_energy, center_energy)
     gradient = model.gradient(center)
     hessian = model.hessian(intervals)
@@ -508,12 +596,47 @@ def _cascading_taylor_lower_bound(
     model: TaylorModel,
     best_energy: float | None = None,
     termination_tracker=None,
+    precomputed: CellTaylorMetadata | None = None,
+    lipshitz_only: bool = False,
 ):
-    center, radius, intervals = _flat_center_and_radius(cell)
-    config = _center_config(cell)
-    charts = _cell_charts(cell)
-    center_energy = thompson_energy(config, charts=charts)
-    metric_radius = _spherical_metric_radius(cell)
+    metadata = precomputed if precomputed is not None else _cell_taylor_metadata(cell)
+
+    center = metadata.center
+    radius = metadata.radius
+    intervals = metadata.intervals
+    config = metadata.config
+    charts = metadata.charts
+    metric_radius = metadata.metric_radius
+    active_indices = metadata.active_indices
+
+#I am not sure if this makes sense anymore
+#
+#    #Torque bounds to see if this cell can be pruned based on torque considerations
+#
+#    x_last = spherical_to_cart(config[-1][0], config[-1][1], chart=charts[-1])
+#    other_points = [
+#        spherical_to_cart(theta, phi, chart=chart)
+#        for (theta, phi), chart in zip(config[:-1], charts[:-1])
+#    ]
+#
+#
+#    #psi, L = psi_and_torque_lipschitz(x_last, other_points, metric_radius)
+#    psi, L = bound_psi_with_jacobian(x_last, other_points, metric_radius)
+#
+#    #Note we just need psi > 0 in the cell and thus psi - cell bound > 0
+#    removable = psi > L 
+#    if removable:
+#        #We don't need to calculate the energy in this case so we do not
+#        _record_termination_exit(termination_tracker, 0, cell)
+#        return None, psi, 0
+#
+#
+#
+    #Onto direct Energy bounds now
+
+    if metadata.center_energy is None:
+        metadata.center_energy = thompson_energy_uncached(config, charts=charts)
+    center_energy = metadata.center_energy
 
     # 1) Cheap: Lipschitz bound from center gradient norm
     gradient = model.gradient(center)
@@ -533,13 +656,17 @@ def _cascading_taylor_lower_bound(
         _record_termination_exit(termination_tracker, 1, cell)
         return None, center_energy, 1
 
-    dq = [_iv_interval(-r, r) for r in radius]
+    if lipshitz_only:
+        # If lipshitz_only is True and we didn't prune, we return the Lipschitz bound
+        return lipschitz_lb, center_energy, 1
+
+    active_dq = [(index, _iv_interval(-radius[index], radius[index])) for index in active_indices]
     e0: Any = _iv_interval(center_energy, center_energy)
 
     # 2) Slightly more expensive: linear Taylor bound
     linear: Any = mp.iv.mpf(0)
-    for gi, dqi in zip(gradient, dq):
-        linear += gi * dqi
+    for index, dqi in active_dq:
+        linear += gradient[index] * dqi
 
     linear_interval: Any = e0 + linear
     linear_lb = float(linear_interval.a)
@@ -551,9 +678,9 @@ def _cascading_taylor_lower_bound(
     # 3) Expensive: quadratic Taylor bound
     hessian = model.hessian(intervals)
     quadratic: Any = mp.iv.mpf(0)
-    for i in range(len(dq)):
-        for j in range(len(dq)):
-            quadratic += dq[i] * hessian[i, j] * dq[j]
+    for i, dqi in active_dq:
+        for j, dqj in active_dq:
+            quadratic += dqi * hessian[i, j] * dqj
 
     quadratic = quadratic * _iv_interval(0.5, 0.5)
     quadratic_interval: Any = linear_interval + quadratic
@@ -874,7 +1001,13 @@ def search(
                     if cell.depth < target_depth:
                         children, split_particle_index = split_with_index(cell)
                         children = [
-                            child for child in children if _ordered_theta_possible(child)
+                            child
+                            for child in children
+                            if _child_ordered_theta_possible_from_parent(
+                                cell,
+                                child,
+                                split_particle_index,
+                            )
                         ]
 
                         if not children:
@@ -1013,7 +1146,13 @@ def search(
                 if cell.depth < target_depth:
                     children, split_particle_index = split_with_index(cell)
                     children = [
-                        child for child in children if _ordered_theta_possible(child)
+                        child
+                        for child in children
+                        if _child_ordered_theta_possible_from_parent(
+                            cell,
+                            child,
+                            split_particle_index,
+                        )
                     ]
 
                     if not children:
